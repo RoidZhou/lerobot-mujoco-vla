@@ -1,0 +1,84 @@
+<mujoco model="m20_nutbolt">
+  <extension>
+    <plugin plugin="mujoco.sdf.bolt">
+      <instance name="m20_bolt">
+        <config key="major_radius" value="0.00980"/>
+        <config key="minor_radius" value="0.00830"/>
+        <config key="pitch" value="0.00250"/>
+        <config key="length" value="0.05000"/>
+        <config key="head_radius" value="0.01500"/>
+        <config key="head_height" value="0.01250"/>
+        <config key="phase" value="0.0"/>
+      </instance>
+    </plugin>
+
+    <plugin plugin="mujoco.sdf.nut">
+      <instance name="m20_nut">
+        <config key="inner_major_radius" value="0.01025"/>
+        <config key="inner_minor_radius" value="0.00890"/>
+        <config key="pitch" value="0.00250"/>
+        <config key="height" value="0.01800"/>
+        <config key="outer_radius" value="0.01500"/>
+        <config key="phase" value="0.0"/>
+      </instance>
+    </plugin>
+  </extension>
+
+  <asset>
+    <mesh name="m20_bolt_mesh">
+      <plugin instance="m20_bolt"/>
+    </mesh>
+    <mesh name="m20_nut_mesh">
+      <plugin instance="m20_nut"/>
+    </mesh>
+  </asset>
+
+  <worldbody>
+    <body name="nut_body" pos="0.32 0 0.82">
+      <geom
+        name="nut_geom"
+        type="sdf"
+        mesh="m20_nut_mesh"
+        rgba="0.2 0.4 1.0 1"
+        solref="0.005 1"
+        solimp="0.95 0.99 0.0001"
+        friction="0.8 0.02 0.02"
+        margin="0.0002"
+        condim="6"
+        contype="1"
+        conaffinity="1">
+        <plugin instance="m20_nut"/>
+      </geom>
+    </body>
+
+    <body name="bolt_body" pos="0.38 0 0.88">
+      <freejoint/>
+      <geom
+        name="bolt_geom"
+        type="sdf"
+        mesh="m20_bolt_mesh"
+        rgba="0.85 0.65 0.15 1"
+        solref="0.005 1"
+        solimp="0.95 0.99 0.0001"
+        friction="0.8 0.02 0.02"
+        margin="0.0002"
+        condim="6"
+        contype="1"
+        conaffinity="1">
+        <plugin instance="m20_bolt"/>
+      </geom>
+
+      <geom
+        name="bolt_visual"
+        type="cylinder"
+        size="0.0098 0.025"
+        pos="0 0 -0.8"
+        rgba="0.9 0.45 0.05 1"
+        contype="0"
+        conaffinity="0"
+        mass="0"/>
+
+
+    </body>
+  </worldbody>
+</mujoco>

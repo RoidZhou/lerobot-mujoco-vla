@@ -1,0 +1,110 @@
+<mujoco model="onrobot_rg2">
+  <option iterations="50" timestep="0.001" solver="PGS" gravity="0 0 -9.81" />
+
+  <compiler angle="radian" meshdir="meshes" eulerseq="zyx" autolimits="true" />
+
+  <default>
+    <joint limited="true" damping="0.01" armature="0.01" frictionloss="0.01" />
+    <geom condim="4" contype="1" conaffinity="15" friction="0.9 0.2 0.2" solref="0.001 2" />
+    <motor ctrllimited="true" />
+    <equality solref="0.001 2" />
+    <default class="visualgeom">
+      <geom material="visualgeom" condim="1" contype="0" conaffinity="0" />
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="quick_changer" file="assets/quick_changer.stl" />
+    <mesh name="hand" file="assets/hand.stl" />
+    <mesh name="moment_arm" file="assets/moment_arm.stl" />
+    <mesh name="finger" file="assets/finger.stl" />
+    <mesh name="truss_arm" file="assets/truss_arm.stl" />
+    <texture name="texplane" type="2d" builtin="checker" rgb1=".0 .0 .0" rgb2=".8 .8 .8" width="100" height="100" />
+    <material name="matplane" reflectance="0." texture="texplane" texrepeat="1 1" texuniform="true" />
+    <material name="visualgeom" rgba="0.5 0.9 0.2 1" />
+  </asset>
+
+  <worldbody>
+    <light directional="true" diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1" pos="0 0 5.0" dir="0 0 -1" castshadow="false" />
+    <light directional="true" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2" pos="0 0 4" dir="0 0 -1" />
+    <geom name="ground" type="plane" pos="0 0 0" size="100 100 0.001" quat="1 0 0 0" material="matplane" condim="3" conaffinity="15" />
+    <camera name="fixed" pos="0 -3.0 0.5295762592802584" xyaxes="1 0 0 0 0 1" />
+    <camera name="track" mode="trackcom" pos="0 -3.0 0.5295762592802584" xyaxes="1 0 0 0 0 1" />
+    <body name="root" pos="0 0 0.029576259280258435" quat="1 0 0 0">
+      <freejoint name="root" />
+      <site name="imu" size="0.01" pos="0 0 0" />
+      <geom pos="0 0 0.015" quat="0 0 0.707107 -0.707107" type="mesh" mesh="quick_changer" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+      <geom type="mesh" rgba="" mesh="quick_changer" pos="0 0 0.015" quat="0 0 0.707107 -0.707107" />
+      <geom pos="0 0 0.015" quat="0.707107 0 -0.707107 0" type="mesh" mesh="hand" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+      <geom type="mesh" rgba="" mesh="hand" pos="0 0 0.015" quat="0.707107 0 -0.707107 0" />
+      <body name="rg2_l_moment_arm_link" pos="-0.01 0.017 0.12" quat="0.707107 0 -0.707107 0">
+        <inertial pos="0.017004 0.006397 -0.0103" quat="0.116079 0.697514 -0.116079 0.697514" mass="0.160209" diaginertia="8.3e-05 7.8504e-05 1.6496e-05" />
+        <joint name="rg2_gripper_joint" pos="0 0 0" axis="0 0 1" range="-0.45 1" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+        <geom type="mesh" mesh="moment_arm" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+        <geom type="mesh" rgba="" mesh="moment_arm" />
+        <body name="rg2_l_finger_link" pos="0.049 0.026 0">
+          <inertial pos="0.024695 -0.010178 -0.010001" quat="0.435925 0.435925 0.556749 0.556749" mass="0.081638" diaginertia="2.62355e-05 2.6e-05 4.76454e-06" />
+          <joint name="rg2_l_finger_2_joint" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+          <geom type="mesh" mesh="finger" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+          <geom type="mesh" rgba="" mesh="finger" />
+        </body>
+      </body>
+      <body name="rg2_l_truss_arm_link" pos="-0.01 0.008 0.137" quat="0.707107 0 -0.707107 0">
+        <inertial pos="0.023075 0.012136 -0.01" quat="0.604527 0.604527 0.366807 0.366807" mass="0.065927" diaginertia="2.92066e-05 2.5e-05 4.79344e-06" />
+        <joint name="rg2_l_finger_passive_joint" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+        <geom type="mesh" mesh="truss_arm" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+        <geom type="mesh" rgba="" mesh="truss_arm" />
+      </body>
+      <body name="rg2_r_moment_arm_link" pos="-0.01 -0.017 0.12" quat="0.707107 0 -0.707107 0">
+        <inertial pos="0.017004 -0.006397 -0.0103" quat="-0.116079 0.697514 0.116079 0.697514" mass="0.160209" diaginertia="8.3e-05 7.8504e-05 1.6496e-05" />
+        <joint name="rg2_r_finger_1_joint" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+        <geom pos="0 0 -0.02" quat="0 1 0 0" type="mesh" mesh="moment_arm" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+        <geom type="mesh" rgba="" mesh="moment_arm" pos="0 0 -0.02" quat="0 1 0 0" />
+        <body name="rg2_r_finger_link" pos="0.049 -0.026 0">
+          <inertial pos="0.024695 0.010178 -0.01" quat="0.556749 0.556749 0.435925 0.435925" mass="0.081637" diaginertia="2.62355e-05 2.6e-05 4.76454e-06" />
+          <joint name="rg2_r_finger_2_joint" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+          <geom pos="0 0 -0.02" quat="0 1 0 0" type="mesh" mesh="finger" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+          <geom type="mesh" rgba="" mesh="finger" pos="0 0 -0.02" quat="0 1 0 0" />
+        </body>
+      </body>
+      <body name="rg2_r_truss_arm_link" pos="-0.01 -0.008 0.137" quat="0.707107 0 -0.707107 0">
+        <inertial pos="0.023075 -0.012136 -0.01" quat="0.366807 0.366807 0.604527 0.604527" mass="0.065927" diaginertia="2.92066e-05 2.5e-05 4.79344e-06" />
+        <joint name="rg2_r_finger_passive_joint" pos="0 0 0" axis="0 0 1" range="-1.5708 1.5708" actuatorfrcrange="-10.6 10.6" damping="0.1" />
+        <geom pos="0 0 -0.02" quat="0 1 0 0" type="mesh" mesh="truss_arm" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
+        <geom type="mesh" rgba="" mesh="truss_arm" pos="0 0 -0.02" quat="0 1 0 0" />
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="rg2_gripper_joint" joint="rg2_gripper_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+    <motor name="rg2_l_finger_2_joint" joint="rg2_l_finger_2_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+    <motor name="rg2_l_finger_passive_joint" joint="rg2_l_finger_passive_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+    <motor name="rg2_r_finger_1_joint" joint="rg2_r_finger_1_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+    <motor name="rg2_r_finger_2_joint" joint="rg2_r_finger_2_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+    <motor name="rg2_r_finger_passive_joint" joint="rg2_r_finger_passive_joint" ctrllimited="true" ctrlrange="-10.6 10.6" gear="1" />
+  </actuator>
+
+  <sensor>
+    <actuatorpos name="rg2_gripper_joint_p" actuator="rg2_gripper_joint" />
+    <actuatorvel name="rg2_gripper_joint_v" actuator="rg2_gripper_joint" />
+    <actuatorfrc name="rg2_gripper_joint_f" actuator="rg2_gripper_joint" noise="0.001" />
+    <actuatorpos name="rg2_l_finger_2_joint_p" actuator="rg2_l_finger_2_joint" />
+    <actuatorvel name="rg2_l_finger_2_joint_v" actuator="rg2_l_finger_2_joint" />
+    <actuatorfrc name="rg2_l_finger_2_joint_f" actuator="rg2_l_finger_2_joint" noise="0.001" />
+    <actuatorpos name="rg2_l_finger_passive_joint_p" actuator="rg2_l_finger_passive_joint" />
+    <actuatorvel name="rg2_l_finger_passive_joint_v" actuator="rg2_l_finger_passive_joint" />
+    <actuatorfrc name="rg2_l_finger_passive_joint_f" actuator="rg2_l_finger_passive_joint" noise="0.001" />
+    <actuatorpos name="rg2_r_finger_1_joint_p" actuator="rg2_r_finger_1_joint" />
+    <actuatorvel name="rg2_r_finger_1_joint_v" actuator="rg2_r_finger_1_joint" />
+    <actuatorfrc name="rg2_r_finger_1_joint_f" actuator="rg2_r_finger_1_joint" noise="0.001" />
+    <actuatorpos name="rg2_r_finger_2_joint_p" actuator="rg2_r_finger_2_joint" />
+    <actuatorvel name="rg2_r_finger_2_joint_v" actuator="rg2_r_finger_2_joint" />
+    <actuatorfrc name="rg2_r_finger_2_joint_f" actuator="rg2_r_finger_2_joint" noise="0.001" />
+    <actuatorpos name="rg2_r_finger_passive_joint_p" actuator="rg2_r_finger_passive_joint" />
+    <actuatorvel name="rg2_r_finger_passive_joint_v" actuator="rg2_r_finger_passive_joint" />
+    <actuatorfrc name="rg2_r_finger_passive_joint_f" actuator="rg2_r_finger_passive_joint" noise="0.001" />
+    <framequat name="orientation" objtype="site" noise="0.001" objname="imu" />
+    <gyro name="angular-velocity" site="imu" noise="0.005" cutoff="34.9" />
+  </sensor>
+</mujoco>
