@@ -14,9 +14,62 @@ pip install ur_rtde
 
 If you use RealSense cameras from this launcher, also make sure `pyrealsense2`, `pyzmq`, `pygame`, and `opencv-python` are installed in the same conda environment.
 
+Tac3D's Python SDK also imports `ruamel.yaml` and `cv2`:
+
+```bash
+pip install ruamel.yaml opencv-python
+```
+
+For Tac3D tactile collection, make sure the Tac3D SDK Python path is available. The launcher defaults to:
+
+```bash
+/media/mel/D64E-50BC/Tac3D-SDK-v3.3.0-20250407/Tac3D-SDK-v3.3.0/Tac3D-API/python/PyTac3D
+```
+
+If the external drive is mounted under a different name, the launcher also scans `/media/mel/*/Tac3D-SDK-v3.3.0-20250407/.../PyTac3D`. You can always override the path explicitly:
+
+```bash
+python real_ur5rg2/experiments/launch_nodes.py --robot ur \
+  --tactile-sdk-path /media/mel/62F7-892C/Tac3D-SDK-v3.3.0-20250407/Tac3D-SDK-v3.3.0/Tac3D-API/python/PyTac3D
+```
+
+Before starting `launch_nodes.py`, start the Tac3D core senders in separate terminals:
+
+```bash
+cd ~/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
+./Tac3D -c config/DL1-GWM0013 -i 127.0.0.1 -p 9988
+```
+
+```bash
+cd ~/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
+./Tac3D -c config/DL1-GWM0018 -i 127.0.0.1 -p 9988
+```
+
+`config/DL1-GWM0013` streams SN `DL1-GWM0013`, and `config/DL1-GWM0018` streams SN `DL1-GWM0018`. If one Tac3D process cannot open its camera, check `inputSrc` in that config's `sensor.yaml`; with two USB Tac3D cameras, one config may need `inputSrc: 1`.
+
+Then start robot/camera/tactile ZMQ with explicit left/right Tac3D SNs:
+
+```bash
+python real_ur5rg2/experiments/launch_nodes.py \
+  --robot ur \
+  --wrist-camera-device-id 412622271117 \
+  --base-camera-device-id 335522073597 \
+  --camera-width 640 \
+  --camera-height 480 \
+  --camera-fps 30 \
+  --left-tactile-device-id DL1-GWM0013 \
+  --right-tactile-device-id DL1-GWM0018
+```
+
+To test the pipeline with one sensor only, point both logical fingers at the same received sensor.
+
+If you get `Permission denied` from the SDK on the `/media/...` drive, copy `Tac3D-Core/linux-x86_64` to a Linux filesystem such as this repository's ignored `local_tac3d_core/` directory and run it from there.
+
+For tactile-only visualization, you can then run `PyTac3D_Displayer2.py`. For data collection, do not keep `PyTac3D_Displayer2.py` open on the same UDP port, because `launch_nodes.py` also binds `9988` to receive the Tac3D frames.
+
 ## 1. Start robot and camera nodes
 
-Run from the project root:
+After the Tac3D core sender is running, run from the project root:
 
 ```bash
 python real_ur5rg2/experiments/launch_nodes.py --robot ur
@@ -27,9 +80,33 @@ Defaults:
 - robot ZMQ: `127.0.0.1:6001`
 - wrist RealSense: `127.0.0.1:5000`, device `335522073597`
 - base RealSense: `127.0.0.1:5001`, device `939622073079`
+- left Tac3D: `127.0.0.1:5100`, device/index `0`
+- right Tac3D: `127.0.0.1:5101`, device/index `1`
+- Tac3D Desktop UDP input: `9988`
 - UR IP: `192.168.1.102`
 
-You can override these with `--robot-ip`, `--wrist-camera-device-id`, and `--base-camera-device-id`.
+You can override these with `--robot-ip`, `--wrist-camera-device-id`, `--base-camera-device-id`, `--left-tactile-device-id`, and `--right-tactile-device-id`.
+
+`--left-tactile-device-id` and `--right-tactile-device-id` may be real Tac3D SN strings, or `0`/`1` to use the first/second sensor received on the Tac3D UDP stream. If Tac3D Desktop sends data to a different UDP port, pass it explicitly:
+
+```bash
+python real_ur5rg2/experiments/launch_nodes.py --robot ur \
+  --tac3d-udp-port 9988
+```
+
+The tactile server waits up to 10 seconds for a matching Tac3D frame by default. If Tac3D Desktop takes longer to start streaming, increase both sides:
+
+```bash
+python real_ur5rg2/experiments/launch_nodes.py --robot ur \
+  --tactile-read-timeout-s 30
+
+python real_ur5rg2/collect_lerobot_smolvla_real.py \
+  --task "Insert the bolt into the nut." \
+  --num-episodes 20 \
+  --no-preview \
+  --tactile-timeout-ms 35000 \
+  --gripper-force 4
+```
 
 The launcher defaults to RGB-only camera streams at 15 FPS to reduce dual-camera USB bandwidth. If one camera repeatedly reports frame timeouts, check that its serial number matches the connected device and try another USB3 port. You can reduce bandwidth further:
 
@@ -75,8 +152,17 @@ Dataset schema:
 - `observation.image`: base camera RGB image, `256x256x3`
 - `observation.wrist_image`: wrist camera RGB image, `256x256x3`
 - `observation.state`: real UR joint state, first 6 joints
+- `observation.tactile_left.displacement`: left Tac3D 3D displacement field, `400x3` by default
+- `observation.tactile_left.distributed_force`: left Tac3D 3D distributed force field, `400x3` by default
+- `observation.tactile_left.wrench`: left Tac3D resultant force and torque, `[Fx, Fy, Fz, Tx, Ty, Tz]`
+- `observation.tactile_right.displacement`: right Tac3D 3D displacement field, `400x3` by default
+- `observation.tactile_right.distributed_force`: right Tac3D 3D distributed force field, `400x3` by default
+- `observation.tactile_right.wrench`: right Tac3D resultant force and torque, `[Fx, Fy, Fz, Tx, Ty, Tz]`
+- `observation.tactile.timestamp`: `[left_timestamp, right_timestamp]`
 - `action`: real UR5 + RG2 joint/gripper state, 7 dimensions
 - `obj_init`: zero placeholder, 9 dimensions, kept for compatibility with existing training code
+
+Use `--tactile-max-points` on both commands if your Tac3D field has more or fewer taxels than 400. Frames with fewer points are zero-padded; frames with more points are truncated to keep the LeRobot schema fixed.
 
 Use `--overwrite` to recreate the dataset root, or `--resume` to append to an existing complete LeRobot dataset.
 If the dataset path already exists, the script will also ask interactively whether to overwrite, continue saving, or quit.

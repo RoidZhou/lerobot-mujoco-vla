@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import lerobot.common.datasets.lerobot_dataset as lerobot_dataset_module
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from PIL import Image
 
@@ -14,6 +15,88 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
+from gello.zmq_core.tactile_node import ZMQClientTactile
+
+
+TACTILE_FIELD_KEYS = (
+    "observation.tactile_left.displacement",
+    "observation.tactile_left.distributed_force",
+    "observation.tactile_right.displacement",
+    "observation.tactile_right.distributed_force",
+)
+
+_DEFAULT_COMPUTE_EPISODE_STATS = lerobot_dataset_module.compute_episode_stats
+_DEFAULT_AGGREGATE_STATS = lerobot_dataset_module.aggregate_stats
+
+
+def _channelwise_tactile_stats(feature_stats: dict) -> dict:
+    if not feature_stats:
+        return feature_stats
+
+    mean = np.asarray(feature_stats.get("mean"))
+    if mean.ndim != 2 or mean.shape[-1] != 3:
+        return feature_stats
+
+    channel_mean = np.mean(mean, axis=0)
+    channel_std = None
+    if "std" in feature_stats:
+        std = np.asarray(feature_stats["std"])
+        if std.shape == mean.shape:
+            variance = np.mean(std**2 + (mean - channel_mean) ** 2, axis=0)
+            channel_std = np.sqrt(variance)
+
+    reduced_stats = dict(feature_stats)
+    if "min" in feature_stats:
+        reduced_stats["min"] = np.min(np.asarray(feature_stats["min"]), axis=0)
+    if "max" in feature_stats:
+        reduced_stats["max"] = np.max(np.asarray(feature_stats["max"]), axis=0)
+    reduced_stats["mean"] = channel_mean
+    if channel_std is not None:
+        reduced_stats["std"] = channel_std
+    return reduced_stats
+
+
+def aggregate_stats_with_channelwise_tactile(
+    stats_list: list[dict[str, dict]],
+) -> dict[str, dict[str, np.ndarray]]:
+    normalized_stats = []
+    for stats in stats_list:
+        normalized = dict(stats)
+        for key in TACTILE_FIELD_KEYS:
+            if key in normalized:
+                normalized[key] = _channelwise_tactile_stats(normalized[key])
+        normalized_stats.append(normalized)
+
+    return _DEFAULT_AGGREGATE_STATS(normalized_stats)
+
+
+def compute_episode_stats_with_channelwise_tactile(
+    episode_data: dict[str, list[str] | np.ndarray],
+    features: dict,
+) -> dict:
+    ep_stats = _DEFAULT_COMPUTE_EPISODE_STATS(episode_data, features)
+
+    for key in TACTILE_FIELD_KEYS:
+        if key not in episode_data:
+            continue
+
+        tactile_array = np.asarray(episode_data[key], dtype=np.float32)
+        if tactile_array.ndim != 3 or tactile_array.shape[-1] != 3:
+            continue
+
+        ep_stats[key] = {
+            "min": np.min(tactile_array, axis=(0, 1)),
+            "max": np.max(tactile_array, axis=(0, 1)),
+            "mean": np.mean(tactile_array, axis=(0, 1)),
+            "std": np.std(tactile_array, axis=(0, 1)),
+            "count": np.array([len(tactile_array)]),
+        }
+
+    return ep_stats
+
+
+lerobot_dataset_module.compute_episode_stats = compute_episode_stats_with_channelwise_tactile
+lerobot_dataset_module.aggregate_stats = aggregate_stats_with_channelwise_tactile
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +112,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robot-port", type=int, default=6001)
     parser.add_argument("--wrist-camera-port", type=int, default=5000)
     parser.add_argument("--base-camera-port", type=int, default=5001)
+    parser.add_argument("--left-tactile-port", type=int, default=5100)
+    parser.add_argument("--right-tactile-port", type=int, default=5101)
+    parser.add_argument("--tactile-max-points", type=int, default=400)
+    parser.add_argument("--tactile-timeout-ms", type=int, default=15000)
     parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument("--gripper-force", type=float, default=10.0)
     parser.add_argument("--move-step", type=float, default=0.0005)
     parser.add_argument("--rot-step", type=float, default=0.03)
     parser.add_argument("--screw-pitch", type=float, default=0.0025)
@@ -38,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no-command", action="store_true")
     parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument("--no-tactile", action="store_true")
     return parser.parse_args()
 
 
@@ -94,6 +183,41 @@ def make_dataset(args: argparse.Namespace) -> LeRobotDataset:
                 "shape": (6,),
                 "names": ["state"],
             },
+            "observation.tactile_left.displacement": {
+                "dtype": "float32",
+                "shape": (args.tactile_max_points, 3),
+                "names": ["taxel", "axis"],
+            },
+            "observation.tactile_left.distributed_force": {
+                "dtype": "float32",
+                "shape": (args.tactile_max_points, 3),
+                "names": ["taxel", "axis"],
+            },
+            "observation.tactile_left.wrench": {
+                "dtype": "float32",
+                "shape": (6,),
+                "names": ["force_torque"],
+            },
+            "observation.tactile_right.displacement": {
+                "dtype": "float32",
+                "shape": (args.tactile_max_points, 3),
+                "names": ["taxel", "axis"],
+            },
+            "observation.tactile_right.distributed_force": {
+                "dtype": "float32",
+                "shape": (args.tactile_max_points, 3),
+                "names": ["taxel", "axis"],
+            },
+            "observation.tactile_right.wrench": {
+                "dtype": "float32",
+                "shape": (6,),
+                "names": ["force_torque"],
+            },
+            "observation.tactile.timestamp": {
+                "dtype": "float64",
+                "shape": (2,),
+                "names": ["sensor"],
+            },
             "action": {
                 "dtype": "float32",
                 "shape": (7,),
@@ -114,6 +238,41 @@ def resize_rgb(image: np.ndarray, image_size: int) -> np.ndarray:
     image = Image.fromarray(image.astype(np.uint8))
     image = image.resize((image_size, image_size))
     return np.asarray(image, dtype=np.uint8)
+
+
+def reset_episode_buffer(dataset: LeRobotDataset) -> None:
+    if dataset.episode_buffer is None:
+        dataset.episode_buffer = dataset.create_episode_buffer()
+    else:
+        dataset.clear_episode_buffer()
+
+
+def empty_tactile_frame(max_points: int) -> dict[str, np.ndarray | float | bool]:
+    return {
+        "displacement": np.zeros((max_points, 3), dtype=np.float32),
+        "distributed_force": np.zeros((max_points, 3), dtype=np.float32),
+        "wrench": np.zeros(6, dtype=np.float32),
+        "timestamp": 0.0,
+        "valid": False,
+    }
+
+
+def format_tactile_frame(
+    frame: dict[str, np.ndarray | float | bool],
+    max_points: int,
+) -> dict[str, np.ndarray | float | bool]:
+    formatted = empty_tactile_frame(max_points)
+    for key in ("displacement", "distributed_force"):
+        array = np.asarray(frame[key], dtype=np.float32).reshape(-1, 3)
+        count = min(array.shape[0], max_points)
+        formatted[key][:count] = array[:count]
+    wrench = np.asarray(frame["wrench"], dtype=np.float32).reshape(-1)
+    if wrench.size < 6:
+        wrench = np.pad(wrench, (0, 6 - wrench.size))
+    formatted["wrench"] = wrench[:6].astype(np.float32)
+    formatted["timestamp"] = float(frame.get("timestamp", 0.0))
+    formatted["valid"] = bool(frame.get("valid", True))
+    return formatted
 
 
 def skew(vec: np.ndarray) -> np.ndarray:
@@ -277,11 +436,23 @@ class PreviewWindow:
 
 def main() -> None:
     args = parse_args()
-    dataset = make_dataset(args)
 
     robot = ZMQClientRobot(port=args.robot_port, host=args.host)
     base_camera = ZMQClientCamera(port=args.base_camera_port, host=args.host)
     wrist_camera = ZMQClientCamera(port=args.wrist_camera_port, host=args.host)
+    left_tactile = None
+    right_tactile = None
+    if not args.no_tactile:
+        left_tactile = ZMQClientTactile(
+            port=args.left_tactile_port,
+            host=args.host,
+            timeout_ms=args.tactile_timeout_ms,
+        )
+        right_tactile = ZMQClientTactile(
+            port=args.right_tactile_port,
+            host=args.host,
+            timeout_ms=args.tactile_timeout_ms,
+        )
 
     try:
         robot_dofs = robot.num_dofs()
@@ -289,18 +460,27 @@ def main() -> None:
             raise RuntimeError(f"Expected UR5 + RG2 robot with 7 DoF, got {robot_dofs}.")
         base_camera.read((args.image_size, args.image_size))
         wrist_camera.read((args.image_size, args.image_size))
+        if left_tactile is not None and right_tactile is not None:
+            format_tactile_frame(left_tactile.read(), args.tactile_max_points)
+            format_tactile_frame(right_tactile.read(), args.tactile_max_points)
     except RuntimeError as exc:
         robot.close()
+        if left_tactile is not None:
+            left_tactile.close()
+        if right_tactile is not None:
+            right_tactile.close()
         raise RuntimeError(
-            "Failed to connect to or warm up the robot/camera ZMQ servers. "
+            "Failed to connect to or warm up the robot/camera/tactile ZMQ servers. "
             "Start them first with:\n"
             "  python real_ur5rg2/experiments/launch_nodes.py --robot ur "
             "--camera-width 424 --camera-height 240 --camera-fps 15\n"
             "If the servers are already running, check the camera serial numbers "
-            "and RealSense USB/frame status.\n"
+            "and RealSense USB/frame status. If tactile collection is enabled, "
+            "also check the Tac3D SDK path, sensor IDs, and tactile ZMQ ports.\n"
             f"Original error: {exc}"
         ) from exc
 
+    dataset = make_dataset(args)
     teleop = KeyboardTeleop()
     preview = PreviewWindow(enabled=not args.no_preview)
 
@@ -332,7 +512,7 @@ def main() -> None:
             dpos, drot, gripper, has_motion, event = teleop.poll(args)
 
             if event == "reset":
-                dataset.clear_episode_buffer()
+                reset_episode_buffer(dataset)
                 recording = False
                 frames_in_episode = 0
                 print("Reset current episode buffer")
@@ -357,7 +537,7 @@ def main() -> None:
                 if not args.no_command:
                     if has_motion:
                         robot.command_tcp_pose(target_tcp)
-                    robot.command_gripper(gripper)
+                    robot.command_gripper(gripper, force=args.gripper_force)
 
             try:
                 base_image, _ = base_camera.read((args.image_size, args.image_size))
@@ -368,6 +548,23 @@ def main() -> None:
             base_image = resize_rgb(base_image, args.image_size)
             wrist_image = resize_rgb(wrist_image, args.image_size)
 
+            if left_tactile is None or right_tactile is None:
+                left_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+                right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+            else:
+                try:
+                    left_tactile_frame = format_tactile_frame(
+                        left_tactile.read(),
+                        args.tactile_max_points,
+                    )
+                    right_tactile_frame = format_tactile_frame(
+                        right_tactile.read(),
+                        args.tactile_max_points,
+                    )
+                except RuntimeError as exc:
+                    print(f"Tactile frame skipped: {exc}")
+                    continue
+
             obs_after = robot.get_observations()
             state = np.asarray(obs_after["joint_positions"], dtype=np.float32)
             action = state.copy()
@@ -376,7 +573,7 @@ def main() -> None:
             if not recording and (has_motion or abs(float(current_joints[-1]) - gripper) > 0.03):
                 recording = True
                 frames_in_episode = 0
-                dataset.clear_episode_buffer()
+                reset_episode_buffer(dataset)
                 print(f"Start recording episode {episode_id}")
 
             if recording:
@@ -385,6 +582,27 @@ def main() -> None:
                         "observation.image": base_image,
                         "observation.wrist_image": wrist_image,
                         "observation.state": state[:6].astype(np.float32),
+                        "observation.tactile_left.displacement": left_tactile_frame[
+                            "displacement"
+                        ],
+                        "observation.tactile_left.distributed_force": left_tactile_frame[
+                            "distributed_force"
+                        ],
+                        "observation.tactile_left.wrench": left_tactile_frame["wrench"],
+                        "observation.tactile_right.displacement": right_tactile_frame[
+                            "displacement"
+                        ],
+                        "observation.tactile_right.distributed_force": right_tactile_frame[
+                            "distributed_force"
+                        ],
+                        "observation.tactile_right.wrench": right_tactile_frame["wrench"],
+                        "observation.tactile.timestamp": np.array(
+                            [
+                                left_tactile_frame["timestamp"],
+                                right_tactile_frame["timestamp"],
+                            ],
+                            dtype=np.float64,
+                        ),
                         "action": action.astype(np.float32),
                         "obj_init": obj_init,
                     },
@@ -397,6 +615,10 @@ def main() -> None:
         preview.close()
         teleop.close()
         robot.close()
+        if left_tactile is not None:
+            left_tactile.close()
+        if right_tactile is not None:
+            right_tactile.close()
 
 
 if __name__ == "__main__":

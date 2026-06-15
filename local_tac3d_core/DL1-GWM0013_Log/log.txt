@@ -1,0 +1,50 @@
+time: 2026-06-15 15:47:55
+SN: DL1-GWM0013
+device: YYQ2504092
+config version: 3.3.0
+Software version: 3.3.0
+camera index set to: -1
+SDK IP set to: 127.0.0.1
+SDK port set to: 9988
+Desktop IP set to: 
+Client Mode set to: 0
+Display Mode set to: 0
+transform image set to: 0
+ThreadsNum : 9
+config 0: InputSource
+Find device YYQ2504092 with index 16
+  image size: 1920 x 1080
+config 1: DMP4_by_Zhang
+config 2: Reconstruction3D2
+  + filter: Mean_t
+config 3: Displacements
+config 4: ContactDetector
+config 5: Force_by_Zhang
+loading matrixK.
+  + filter: Mean_t
+  + filter: Mean_t
+  + filter: Mean_s
+  + filter: ForceCorrection
+config 6: CalibrationManager
+config 7: NetworkTransport_SDK
+  Send port: 48369
+  Recv port: 9988
+config 8: CustomCall
+DMP4 feature error: 7.873445
+DMP4 conflict num: 0
+DMP4 not found: 0
+Errors detected in calibration!
+The average error in feature matching is too large (7.873445).
+Please make sure the elastomer is not in contact during startup or calibration !
+Reset initial values of 3D_Displacements
+30%
+60%
+90%
+DMP4 feature error: 7.953148
+DMP4 conflict num: 0
+DMP4 not found: 0
+Errors detected in calibration!
+The average error in feature matching is too large (7.953148).
+Please make sure the elastomer is not in contact during startup or calibration !
+Reset initial values of 3D_Displacements
+[error] camera disconnected ! (0x4a)

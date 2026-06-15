@@ -129,13 +129,13 @@ class URRobot(Robot):
             )
             self.robot.waitPeriod(t_start)
 
-    def command_gripper(self, gripper_scalar: float) -> None:
+    def command_gripper(self, gripper_scalar: float, force: float = 10.0) -> None:
         if not self._use_gripper:
             return
         gripper_scalar = float(np.clip(gripper_scalar, 0.0, 1.0))
         target_width = 110.0 * (1.0 - gripper_scalar)
         if abs(gripper_scalar - self.last_gripper_scalar) > 0.03:
-            self.gripper.move(target_width, 10)
+            self.gripper.move(target_width, force)
             self.last_gripper_pose = target_width
             self.last_gripper_scalar = gripper_scalar
 

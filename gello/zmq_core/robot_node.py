@@ -159,10 +159,10 @@ class ZMQClientRobot(Robot):
         }
         return self._request(request)
 
-    def command_gripper(self, gripper_scalar: float) -> None:
+    def command_gripper(self, gripper_scalar: float, force: float = 10.0) -> None:
         request = {
             "method": "command_gripper",
-            "args": {"gripper_scalar": gripper_scalar},
+            "args": {"gripper_scalar": gripper_scalar, "force": force},
         }
         return self._request(request)
 
