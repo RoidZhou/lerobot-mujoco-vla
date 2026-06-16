@@ -107,6 +107,10 @@ class URRobot(Robot):
         """Return UR TCP pose as [x, y, z, rx, ry, rz]."""
         return np.asarray(self.r_inter.getActualTCPPose(), dtype=float)
 
+    def get_tcp_force(self) -> np.ndarray:
+        """Return TCP force/torque as [Fx, Fy, Fz, Tx, Ty, Tz]."""
+        return np.asarray(self.r_inter.getActualTCPForce(), dtype=float)
+
     def command_tcp_pose(
         self,
         tcp_pose: np.ndarray,
@@ -196,11 +200,13 @@ class URRobot(Robot):
         joints = self.get_joint_state()
         pos_quat = np.zeros(7)
         gripper_pos = np.array([joints[-1]])
+        tcp_force = self.get_tcp_force()
         return {
             "joint_positions": joints,
             "joint_velocities": joints,
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
+            "tcp_force": tcp_force,
         }
 
 

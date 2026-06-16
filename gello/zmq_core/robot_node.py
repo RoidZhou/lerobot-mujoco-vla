@@ -51,6 +51,10 @@ class ZMQServerRobot:
                     if not hasattr(self._robot, "get_tcp_pose"):
                         raise NotImplementedError("Robot does not expose get_tcp_pose")
                     result = self._robot.get_tcp_pose()
+                elif method == "get_tcp_force":
+                    if not hasattr(self._robot, "get_tcp_force"):
+                        raise NotImplementedError("Robot does not expose get_tcp_force")
+                    result = self._robot.get_tcp_force()
                 elif method == "command_tcp_pose":
                     if not hasattr(self._robot, "command_tcp_pose"):
                         raise NotImplementedError("Robot does not expose command_tcp_pose")
@@ -150,6 +154,10 @@ class ZMQClientRobot(Robot):
 
     def get_tcp_pose(self) -> np.ndarray:
         request = {"method": "get_tcp_pose"}
+        return self._request(request)
+
+    def get_tcp_force(self) -> np.ndarray:
+        request = {"method": "get_tcp_force"}
         return self._request(request)
 
     def command_tcp_pose(self, tcp_pose: np.ndarray) -> None:

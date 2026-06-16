@@ -104,8 +104,11 @@ python real_ur5rg2/collect_lerobot_smolvla_real.py \
   --task "Insert the bolt into the nut." \
   --num-episodes 20 \
   --no-preview \
-  --tactile-timeout-ms 35000 \
-  --gripper-force 4
+  --collect-force \
+  --no-collect-tactile \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
 ```
 
 The launcher defaults to RGB-only camera streams at 15 FPS to reduce dual-camera USB bandwidth. If one camera repeatedly reports frame timeouts, check that its serial number matches the connected device and try another USB3 port. You can reduce bandwidth further:
