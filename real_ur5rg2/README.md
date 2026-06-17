@@ -137,6 +137,31 @@ If OpenCV was installed without GUI support, disable the camera preview:
 python real_ur5rg2/collect_lerobot_smolvla_real.py --task "Insert the bolt into the nut." --num-episodes 20 --no-preview
 ```
 
+To reduce excessive x/y/z contact force and torque during bolt/nut collection, enable the
+FTS-300-S force reader. The collector will tare the sensor, map the raw Modbus
+axes like `ur5moverealrobot3.py` (`[Fx,Fy,Fz] -> [-Fx,-Fz,-Fy]` in tool frame),
+map torque with the same reference script convention, and add a small 6D
+Cartesian admittance retreat before sending each TCP target:
+
+```bash
+python real_ur5rg2/collect_lerobot_smolvla_real.py \
+  --task "Insert the bolt into the nut." \
+  --num-episodes 20 \
+  --no-preview \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-safety-threshold-n 5,5,5 \
+  --force-safety-hard-stop-n 18,18,18 \
+  --force-safety-max-correction-m 0.006 \
+  --torque-safety-threshold-nm 0.5,0.5,0.5 \
+  --torque-safety-hard-stop-nm 1.5,1.5,1.5 \
+  --torque-safety-max-correction-rad 0.035
+```
+
+If the robot retreats in the wrong direction on one axis, flip that axis with
+`--force-safety-axis-signs`, for example `--force-safety-axis-signs -1,1,-1`.
+Use `--no-force-safety` to record force/torque without applying the correction.
+
 Keyboard controls match the simulation teleop style:
 
 - `W/S/A/D`: move TCP in the x/y plane
