@@ -169,3 +169,18 @@ Use `--tactile-max-points` on both commands if your Tac3D field has more or fewe
 
 Use `--overwrite` to recreate the dataset root, or `--resume` to append to an existing complete LeRobot dataset.
 If the dataset path already exists, the script will also ask interactively whether to overwrite, continue saving, or quit.
+
+## 3. infer
+```bash
+python real_ur5rg2/experiments/launch_nodes.py --robot ur \
+  --tactile-read-timeout-s 30
+
+python real_ur5rg2/infer_smolvla_real_ur5.py \
+  --task "Insert the bolt into the nut." \
+  --root /path/to/your/lerobot_dataset \
+  --policy-path /path/to/checkpoint/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
+```
