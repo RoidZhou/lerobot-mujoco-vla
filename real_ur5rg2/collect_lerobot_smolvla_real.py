@@ -268,7 +268,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-safety-inv-mass",
         type=float,
-        default=0.10,
+        default=0.05,
         help="Inverse mass term for the translational admittance correction.",
     )
     parser.add_argument(
@@ -286,7 +286,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--torque-safety-inv-inertia",
         type=float,
-        default=0.08,
+        default=0.04,
         help="Inverse inertia term for the rotational admittance correction.",
     )
     parser.add_argument(
@@ -310,7 +310,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-safety-max-correction-m",
         type=float,
-        default=0.006,
+        default=0.002,
         help="Max absolute Cartesian correction in m.",
     )
     parser.add_argument(
@@ -322,7 +322,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--torque-safety-max-correction-rad",
         type=float,
-        default=0.035,
+        default=0.015,
         help="Max absolute posture correction in rad.",
     )
     parser.add_argument(
@@ -573,8 +573,8 @@ def resolve_force_safety_axis_mapping(args: argparse.Namespace) -> tuple[np.ndar
     if preset == "fts300-tool":
         # Matches getPureForceTorqueToTool() in ur5moverealrobot3.py:
         # raw [Fx,Fy,Fz] -> tool [-Fx,-Fz,-Fy].
-        axis_order = np.asarray([0, 2, 1], dtype=int)
-        axis_signs = np.asarray([-1.0, -1.0, -1.0], dtype=np.float64)
+        axis_order = np.asarray([0, 1, 2], dtype=int)
+        axis_signs = np.asarray([1.0, 1.0, -1.0], dtype=np.float64)
     elif preset == "identity":
         axis_order = np.asarray([0, 1, 2], dtype=int)
         axis_signs = np.ones(3, dtype=np.float64)

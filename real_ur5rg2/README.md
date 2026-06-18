@@ -149,7 +149,10 @@ python real_ur5rg2/collect_lerobot_smolvla_real.py \
   --num-episodes 20 \
   --no-preview \
   --collect-force \
+  --no-collect-tactile \
   --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
   --force-safety-threshold-n 5,5,5 \
   --force-safety-hard-stop-n 18,18,18 \
   --force-safety-max-correction-m 0.006 \
