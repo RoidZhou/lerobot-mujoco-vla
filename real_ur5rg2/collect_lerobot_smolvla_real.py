@@ -40,6 +40,14 @@ DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
 DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
 DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
 DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M = 0.042 - 0.0034
+RESET_TCP_POSITION = np.asarray([-0.040076405, -0.5464264, 0.21074047], dtype=np.float64)
+RESET_TCP_POSITION_RANDOM_RANGE_M = 0.1
+# The bolt/tool axis on this TCP points along local -Z, so identity makes it
+# point vertically down in the base frame.
+RESET_TCP_ROTATION_VECTOR = np.asarray(
+    [-np.pi, 0.0, 0.0],
+    dtype=np.float64,
+)
 
 _DEFAULT_COMPUTE_EPISODE_STATS = lerobot_dataset_module.compute_episode_stats
 _DEFAULT_AGGREGATE_STATS = lerobot_dataset_module.aggregate_stats
@@ -120,7 +128,7 @@ def parse_args() -> argparse.Namespace:
         description="Collect LeRobot/SmolVLA episodes on a real UR5 + RG2 with keyboard teleop."
     )
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
-    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force")
+    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut")
     parser.add_argument("--task", default="Insert the bolt into the nut.")
     parser.add_argument("--num-episodes", type=int, default=20)
     parser.add_argument("--fps", type=int, default=20)
@@ -268,7 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-safety-inv-mass",
         type=float,
-        default=0.05,
+        default=0.40,
         help="Inverse mass term for the translational admittance correction.",
     )
     parser.add_argument(
@@ -286,7 +294,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--torque-safety-inv-inertia",
         type=float,
-        default=0.04,
+        default=0.08,
         help="Inverse inertia term for the rotational admittance correction.",
     )
     parser.add_argument(
@@ -310,7 +318,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-safety-max-correction-m",
         type=float,
-        default=0.002,
+        default=0.006,
         help="Max absolute Cartesian correction in m.",
     )
     parser.add_argument(
@@ -322,7 +330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--torque-safety-max-correction-rad",
         type=float,
-        default=0.015,
+        default=0.035,
         help="Max absolute posture correction in rad.",
     )
     parser.add_argument(
@@ -341,8 +349,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gripper-force", type=float, default=4.0)
     parser.add_argument("--move-step", type=float, default=0.0005)
     parser.add_argument("--rot-step", type=float, default=0.03)
+    parser.add_argument("--shift-speed-scale", type=float, default=5)
     parser.add_argument("--screw-pitch", type=float, default=0.0025)
     parser.add_argument("--screw-rot-step", type=float, default=0.02)
+    parser.add_argument(
+        "--reset-max-joint-step-rad",
+        type=float,
+        default=0.1,
+        help="Max joint step per control frame when moving to L reset through IK.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no-command", action="store_true")
@@ -530,8 +545,8 @@ def print_force_torque(force_torque: np.ndarray) -> None:
     values = [float(v) for v in force_torque]
     print(
         "FTS-300-S force_torque "
-        f"[Fx,Fy,Fz,Tx,Ty,Tz]=[{values[0]: .3f}, {values[1]: .3f}, "
-        f"{values[2]: .3f}, {values[3]: .3f}, {values[4]: .3f}, {values[5]: .3f}]"
+        f"[Fx,Fy,Fz,Tx,Ty,Tz]=[{values[0]: .2f}, {values[1]: .2f}, "
+        f"{values[2]: .2f}, {values[3]: .2f}, {values[4]: .2f}, {values[5]: .2f}]"
     )
 
 
@@ -688,9 +703,9 @@ class CartesianForceSafetyController:
         if self.axis_preset == "fts300-tool":
             torque = np.asarray(
                 [
-                    torque_raw[2],
-                    -(torque_raw[0] - force_raw[1] * self.tool_offset_m),
-                    -(torque_raw[1] + self.tool_offset_m * force_raw[0]),
+                    (torque_raw[0] - force_raw[1] * self.tool_offset_m),
+                    (torque_raw[1] + self.tool_offset_m * force_raw[0]),
+                    -torque_raw[2],
                 ],
                 dtype=np.float64,
             )
@@ -881,6 +896,7 @@ def rotation_matrix(angle: float, direction: tuple[float, float, float]) -> np.n
     return rotvec_to_matrix(np.asarray(direction, dtype=np.float64) * angle)
 
 
+
 class KeyboardTeleop:
     def __init__(self) -> None:
         import pygame
@@ -889,7 +905,7 @@ class KeyboardTeleop:
         pygame.init()
         self.screen = pygame.display.set_mode((520, 160))
         pygame.display.set_caption("UR5 RG2 keyboard collection")
-        self.gripper_closed = False
+        self.gripper_closed = True
         self._paint((80, 80, 80))
 
     def _paint(self, color: tuple[int, int, int]) -> None:
@@ -913,9 +929,19 @@ class KeyboardTeleop:
                 event = "quit"
             elif pygame_event.key == self.pygame.K_SPACE:
                 self.gripper_closed = not self.gripper_closed
+            elif pygame_event.key == self.pygame.K_p:
+                event = "start"
+            elif pygame_event.key == self.pygame.K_l:
+                event = "random_reset_pose"
+            elif pygame_event.key == self.pygame.K_o:
+                event = "capture_reset_orientation"
 
         keys = self.pygame.key.get_pressed()
         move_step = args.move_step
+        shift_pressed = keys[self.pygame.K_LSHIFT] or keys[self.pygame.K_RSHIFT]
+        speed_scale = args.shift_speed_scale if shift_pressed else 1.0
+        move_step = args.move_step * speed_scale
+
         dpos = np.zeros(3, dtype=np.float64)
         drot = np.eye(3)
 
@@ -948,15 +974,16 @@ class KeyboardTeleop:
         screw_linear_step = args.screw_pitch * args.screw_rot_step / (2 * np.pi)
         if keys[self.pygame.K_t]:
             dpos += np.array([0.0, 0.0, -screw_linear_step])
-            drot = rotation_matrix(-args.screw_rot_step, (0.0, 1.0, 0.0))
+            drot = rotation_matrix(args.screw_rot_step, (0.0, 0.0, 1.0))
         if keys[self.pygame.K_g]:
             dpos += np.array([0.0, 0.0, screw_linear_step])
-            drot = rotation_matrix(args.screw_rot_step, (0.0, 1.0, 0.0))
+            drot = rotation_matrix(-args.screw_rot_step, (0.0, 0.0, 1.0))
 
         has_motion = bool(np.any(dpos) or not np.allclose(drot, np.eye(3)))
         self._paint((0, 140, 0) if has_motion else (80, 80, 80))
         gripper = 1.0 if self.gripper_closed else 0.0
         return dpos, drot, gripper, has_motion, event
+
 
 
 def apply_tcp_delta(tcp_pose: np.ndarray, dpos: np.ndarray, drot: np.ndarray) -> np.ndarray:
@@ -965,6 +992,37 @@ def apply_tcp_delta(tcp_pose: np.ndarray, dpos: np.ndarray, drot: np.ndarray) ->
     current_rot = rotvec_to_matrix(target[3:6])
     target[3:6] = matrix_to_rotvec(current_rot @ drot)
     return target
+
+
+def sample_random_reset_tcp(reset_rotation_vector: np.ndarray) -> np.ndarray:
+    target = np.zeros(6, dtype=np.float64)
+    target[:3] = RESET_TCP_POSITION + np.random.uniform(
+        -RESET_TCP_POSITION_RANDOM_RANGE_M,
+        RESET_TCP_POSITION_RANDOM_RANGE_M,
+        size=3,
+    )
+    target[3:6] = np.asarray(reset_rotation_vector, dtype=np.float64)
+    return target
+
+
+def step_toward_joint_state(
+    current_joints: np.ndarray,
+    target_joints: np.ndarray,
+    max_joint_step_rad: float,
+) -> tuple[np.ndarray, bool]:
+    current = np.asarray(current_joints, dtype=np.float64).copy()
+    target = np.asarray(target_joints, dtype=np.float64).reshape(-1)
+    next_joints = current.copy()
+
+    arm_delta = target[:6] - current[:6]
+    max_delta = float(np.max(np.abs(arm_delta)))
+    if max_delta > max_joint_step_rad > 0.0:
+        next_joints[:6] = current[:6] + arm_delta / max_delta * max_joint_step_rad
+    else:
+        next_joints[:6] = target[:6]
+
+    reached = np.max(np.abs(target[:6] - next_joints[:6])) < 1e-3
+    return next_joints, reached
 
 
 class PreviewWindow:
@@ -1086,11 +1144,16 @@ def main() -> None:
     recording = False
     frames_in_episode = 0
     next_tick = time.time()
+    reset_target_joints = None
+    reset_rotation_vector = RESET_TCP_ROTATION_VECTOR.copy()
 
     print("Keyboard teleop controls:")
     print("  W/S/A/D/R/F: translate TCP")
     print("  Arrow keys + Q/E: rotate TCP")
     print("  T/G: screw motion")
+    print("  P: start recording")
+    print("  L: move to randomized reset pose through IK")
+    print("  O: capture current TCP orientation for L reset")
     print("  SPACE: toggle RG2, Z: clear current episode, ENTER: save episode, ESC: exit")
 
     try:
@@ -1107,7 +1170,15 @@ def main() -> None:
 
             dpos, drot, gripper, has_motion, event = teleop.poll(args)
 
+            # if recording:
+                # print(
+                #     "TCP pose "
+                #     f"[x,y,z,rx,ry,rz]=[{tcp_pose[0]: .4f}, {tcp_pose[1]: .4f}, "
+                #     f"{tcp_pose[2]: .4f}, {tcp_pose[3]: .3f}, {tcp_pose[4]: .3f}, {tcp_pose[5]: .3f}]"
+                # )
+
             if event == "reset":
+                reset_target_joints = None
                 reset_episode_buffer(dataset)
                 if force_safety is not None:
                     force_safety.reset()
@@ -1116,6 +1187,7 @@ def main() -> None:
                 print("Reset current episode buffer")
                 continue
             if event == "done":
+                reset_target_joints = None
                 if recording and frames_in_episode > 0:
                     dataset.save_episode()
                     print(f"Saved episode {episode_id} ({frames_in_episode} frames)")
@@ -1125,13 +1197,74 @@ def main() -> None:
                 recording = False
                 frames_in_episode = 0
                 continue
+            # Start recording immediately when P is pressed, instead of waiting for motion. This allows collecting "zero" episodes with no motion, which can be useful for certain applications.
+            if event == "start":
+                if not recording:
+                    recording = True
+                    frames_in_episode = 0
+                    reset_episode_buffer(dataset)
+                    if force_safety is not None:
+                        force_safety.reset()
+                    print(f"Start recording episode {episode_id}")
             if event == "quit":
+                reset_target_joints = None
                 if recording and frames_in_episode > 0:
                     dataset.save_episode()
                     print(f"Saved episode {episode_id} before exit ({frames_in_episode} frames)")
                 break
 
-            target_tcp = apply_tcp_delta(tcp_pose, dpos, drot)
+            if event == "capture_reset_orientation":
+                reset_rotation_vector = np.asarray(tcp_pose[3:6], dtype=np.float64).copy()
+                print(
+                    "Captured reset TCP orientation "
+                    f"[rx,ry,rz]=[{reset_rotation_vector[0]: .6f}, "
+                    f"{reset_rotation_vector[1]: .6f}, {reset_rotation_vector[2]: .6f}]"
+                )
+                continue
+
+            if event == "random_reset_pose":
+                reset_tcp = sample_random_reset_tcp(reset_rotation_vector)
+                try:
+                    reset_target_joints = np.asarray(
+                        robot.inverse_kinematics(reset_tcp, qnear=current_joints[:6]),
+                        dtype=np.float64,
+                    )
+                    reset_target_joints[5] -= 2.5 * np.pi
+                except RuntimeError as exc:
+                    print(
+                        "Reset IK failed. Restart launch_nodes.py so the robot "
+                        f"server exposes inverse_kinematics. Error: {exc}"
+                    )
+                    continue
+                if force_safety is not None:
+                    force_safety.reset()
+                print(
+                    "Move to randomized reset pose through IK "
+                    f"tcp=[{reset_tcp[0]: .4f}, {reset_tcp[1]: .4f}, "
+                    f"{reset_tcp[2]: .4f}, {reset_tcp[3]: .3f}, "
+                    f"{reset_tcp[4]: .3f}, {reset_tcp[5]: .3f}] "
+                    f"q={np.array2string(reset_target_joints, precision=4)}"
+                )
+
+            reset_pose_requested = reset_target_joints is not None
+            if reset_pose_requested:
+                target_joints, reset_reached = step_toward_joint_state(
+                    current_joints,
+                    reset_target_joints,
+                    abs(float(args.reset_max_joint_step_rad)),
+                )
+                target_joints[-1] = gripper
+                if reset_reached:
+                    reset_target_joints = None
+                    actual_tcp = robot.get_tcp_pose()
+                    print(
+                        "Reached randomized reset IK joint target; actual TCP "
+                        f"[x,y,z,rx,ry,rz]=[{actual_tcp[0]: .4f}, {actual_tcp[1]: .4f}, "
+                        f"{actual_tcp[2]: .4f}, {actual_tcp[3]: .3f}, "
+                        f"{actual_tcp[4]: .3f}, {actual_tcp[5]: .3f}]"
+                    )
+            else:
+                target_tcp = apply_tcp_delta(tcp_pose, dpos, drot)
 
             force_torque = np.zeros(6, dtype=np.float32)
             if store_force and force_reader is not None:
@@ -1145,7 +1278,7 @@ def main() -> None:
             safety_active = False
             safety_hard_stop = False
             safety_correction = np.zeros(6, dtype=np.float64)
-            if force_safety is not None:
+            if force_safety is not None and not reset_pose_requested:
                 target_tcp, safety_hard_stop, safety_correction, signed_wrench = (
                     force_safety.correct_target(tcp_pose, target_tcp, force_torque)
                 )
@@ -1160,9 +1293,16 @@ def main() -> None:
                         f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
                     )
 
-            if has_motion or safety_active or abs(float(current_joints[-1]) - gripper) > 0.03:
+            if (
+                reset_pose_requested
+                or has_motion
+                or safety_active
+                or abs(float(current_joints[-1]) - gripper) > 0.03
+            ):
                 if not args.no_command:
-                    if has_motion or safety_active:
+                    if reset_pose_requested:
+                        robot.command_joint_state(target_joints)
+                    elif has_motion or safety_active:
                         robot.command_tcp_pose(target_tcp)
                     if not safety_hard_stop:
                         robot.command_gripper(gripper, force=args.gripper_force)
@@ -1198,15 +1338,18 @@ def main() -> None:
             action = state.copy()
             action[-1] = float(state[-1]) if safety_hard_stop else gripper
 
-            if not recording and (
-                has_motion
-                or safety_active
-                or abs(float(current_joints[-1]) - gripper) > 0.03
-            ):
-                recording = True
-                frames_in_episode = 0
-                reset_episode_buffer(dataset)
-                print(f"Start recording episode {episode_id}")
+            
+            # Recording now starts only when P is pressed.
+
+            # if not recording and (
+            #     has_motion
+            #     or safety_active
+            #     or abs(float(current_joints[-1]) - gripper) > 0.03
+            # ):
+            #     recording = True
+            #     frames_in_episode = 0
+            #     reset_episode_buffer(dataset)
+            #     print(f"Start recording episode {episode_id}")
 
             if recording:
                 frame = {
@@ -1249,8 +1392,9 @@ def main() -> None:
                 if store_force:
                     frame[FORCE_TORQUE_KEY] = force_torque
                     print_every = max(1, int(args.force_print_every))
-                    if frames_in_episode % print_every == 0:
-                        print_force_torque(force_torque)
+                    # 不打印力
+                    # if frames_in_episode % print_every == 0:
+                    #     print_force_torque(force_torque)
 
                 dataset.add_frame(frame, task=args.task)
                 frames_in_episode += 1

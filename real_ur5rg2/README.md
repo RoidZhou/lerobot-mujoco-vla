@@ -146,7 +146,7 @@ Cartesian admittance retreat before sending each TCP target:
 ```bash
 python real_ur5rg2/collect_lerobot_smolvla_real.py \
   --task "Insert the bolt into the nut." \
-  --num-episodes 20 \
+  --num-episodes 50 \
   --no-preview \
   --collect-force \
   --no-collect-tactile \
@@ -160,7 +160,20 @@ python real_ur5rg2/collect_lerobot_smolvla_real.py \
   --torque-safety-hard-stop-nm 1.5,1.5,1.5 \
   --torque-safety-max-correction-rad 0.035
 ```
+```bash
+python real_ur5rg2/collect_lerobot_smolvla_real.py \
+  --task "Insert the bolt into the nut." \
+  --num-episodes 50 \
+  --no-preview \
+  --collect-force \
+  --no-collect-tactile \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20
 
+  python real_ur5rg2/collect_lerobot_smolvla_real.py   --task "Insert the bolt into the nut."   --num-episodes 50   --no-preview   --collect-force   --no-collect-tactile   --force-serial-port /dev/ttyUSB0   --force-serial-timeout-s 0.1   --force-serial-retries 5   --force-safety-threshold-n 10,10,20
+```
 If the robot retreats in the wrong direction on one axis, flip that axis with
 `--force-safety-axis-signs`, for example `--force-safety-axis-signs -1,1,-1`.
 Use `--no-force-safety` to record force/torque without applying the correction.
@@ -198,17 +211,32 @@ Use `--tactile-max-points` on both commands if your Tac3D field has more or fewe
 Use `--overwrite` to recreate the dataset root, or `--resume` to append to an existing complete LeRobot dataset.
 If the dataset path already exists, the script will also ask interactively whether to overwrite, continue saving, or quit.
 
-## 3. infer
+## 3. infer without force
 ```bash
 python real_ur5rg2/experiments/launch_nodes.py --robot ur \
   --tactile-read-timeout-s 30
 
 python real_ur5rg2/infer_smolvla_real_ur5.py \
   --task "Insert the bolt into the nut." \
-  --root /path/to/your/lerobot_dataset \
-  --policy-path /path/to/checkpoint/pretrained_model \
+  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_clean \
+  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force/020000/pretrained_model \
   --collect-force \
   --force-serial-port /dev/ttyUSB0 \
   --force-serial-timeout-s 0.1 \
   --force-serial-retries 5
+```
+
+
+## 34 infer with force
+
+```bash
+python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
+  --task "Insert the bolt into the nut." \
+  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut \
+  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20
 ```

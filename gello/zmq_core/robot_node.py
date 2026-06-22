@@ -1,6 +1,6 @@
 import pickle
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import zmq
@@ -55,6 +55,10 @@ class ZMQServerRobot:
                     if not hasattr(self._robot, "get_tcp_force"):
                         raise NotImplementedError("Robot does not expose get_tcp_force")
                     result = self._robot.get_tcp_force()
+                elif method == "inverse_kinematics":
+                    if not hasattr(self._robot, "inverse_kinematics"):
+                        raise NotImplementedError("Robot does not expose inverse_kinematics")
+                    result = self._robot.inverse_kinematics(**args)
                 elif method == "command_tcp_pose":
                     if not hasattr(self._robot, "command_tcp_pose"):
                         raise NotImplementedError("Robot does not expose command_tcp_pose")
@@ -158,6 +162,17 @@ class ZMQClientRobot(Robot):
 
     def get_tcp_force(self) -> np.ndarray:
         request = {"method": "get_tcp_force"}
+        return self._request(request)
+
+    def inverse_kinematics(
+        self,
+        tcp_pose: np.ndarray,
+        qnear: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        request = {
+            "method": "inverse_kinematics",
+            "args": {"tcp_pose": tcp_pose, "qnear": qnear},
+        }
         return self._request(request)
 
     def command_tcp_pose(self, tcp_pose: np.ndarray) -> None:

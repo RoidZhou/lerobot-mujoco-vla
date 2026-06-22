@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import threading
@@ -110,6 +110,22 @@ class URRobot(Robot):
     def get_tcp_force(self) -> np.ndarray:
         """Return TCP force/torque as [Fx, Fy, Fz, Tx, Ty, Tz]."""
         return np.asarray(self.r_inter.getActualTCPForce(), dtype=float)
+
+    def inverse_kinematics(
+        self,
+        tcp_pose: np.ndarray,
+        qnear: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Return UR IK solution for TCP pose as six joint angles."""
+        tcp_pose = np.asarray(tcp_pose, dtype=float).reshape(6)
+        qnear_list = []
+        if qnear is not None:
+            qnear_list = np.asarray(qnear, dtype=float).reshape(-1)[:6].tolist()
+        joints = self.robot.getInverseKinematics(tcp_pose.tolist(), qnear_list)
+        joints = np.asarray(joints, dtype=float).reshape(-1)
+        if joints.size != 6:
+            raise RuntimeError(f"UR inverse kinematics failed for tcp_pose={tcp_pose.tolist()}")
+        return joints
 
     def command_tcp_pose(
         self,

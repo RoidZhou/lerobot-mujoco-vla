@@ -26,7 +26,7 @@ for path in (PROJECT_ROOT, REFERENCE_ROOT):
 
 DEFAULT_POLICY_PATHS = (
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_real_ur5/checkpoints/last/pretrained_model",
-    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force/020000/pretrained_model",
+    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut/020000/pretrained_model",
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_v2/020000/pretrained_model",
 )
 DEFAULT_VLM_MODEL_PATHS = (
@@ -43,6 +43,11 @@ DEFAULT_VLM_MODEL_PATHS = (
 )
 
 FORCE_TARE_SECONDS = 2.0
+DEFAULT_FORCE_SAFETY_THRESHOLD_N = 5.0
+DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
+DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
+DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
+DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M = 0.042 - 0.0034
 FORCE_KEYS = (
     "observation.force_torque",
     "observation.force",
@@ -75,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
     parser.add_argument(
         "--root",
-        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force",
+        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut",
         help="LeRobot dataset root used for metadata/stats.",
     )
     parser.add_argument("--policy-path", default=None)
@@ -135,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--collect-force",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Read force/torque and feed it if the policy has a force input.",
     )
     parser.add_argument(
@@ -160,6 +165,57 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-modbus-word-order", choices=("big", "little"), default="big")
     parser.add_argument("--force-modbus-scale", type=float, default=1.0)
     parser.add_argument("--force-modbus-timeout-s", type=float, default=1.0)
+    parser.add_argument(
+        "--force-safety",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply Cartesian admittance force correction during inference.",
+    )
+    parser.add_argument(
+        "--force-safety-threshold-n",
+        default=f"{DEFAULT_FORCE_SAFETY_THRESHOLD_N},{DEFAULT_FORCE_SAFETY_THRESHOLD_N},{DEFAULT_FORCE_SAFETY_THRESHOLD_N}",
+        help="Per-axis x,y,z force threshold in N before correction starts.",
+    )
+    parser.add_argument(
+        "--force-safety-hard-stop-n",
+        default=f"{DEFAULT_FORCE_SAFETY_HARD_STOP_N},{DEFAULT_FORCE_SAFETY_HARD_STOP_N},{DEFAULT_FORCE_SAFETY_HARD_STOP_N}",
+        help="Per-axis x,y,z hard force limit in N.",
+    )
+    parser.add_argument(
+        "--torque-safety-threshold-nm",
+        default=f"{DEFAULT_TORQUE_SAFETY_THRESHOLD_NM},{DEFAULT_TORQUE_SAFETY_THRESHOLD_NM},{DEFAULT_TORQUE_SAFETY_THRESHOLD_NM}",
+        help="Per-axis rx,ry,rz torque threshold in Nm before correction starts.",
+    )
+    parser.add_argument(
+        "--torque-safety-hard-stop-nm",
+        default=f"{DEFAULT_TORQUE_SAFETY_HARD_STOP_NM},{DEFAULT_TORQUE_SAFETY_HARD_STOP_NM},{DEFAULT_TORQUE_SAFETY_HARD_STOP_NM}",
+        help="Per-axis rx,ry,rz hard torque limit in Nm.",
+    )
+    parser.add_argument("--force-torque-tool-offset-m", type=float, default=DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M)
+    parser.add_argument("--force-safety-axis-signs", default=None)
+    parser.add_argument("--force-safety-axis-order", default=None)
+    parser.add_argument(
+        "--force-safety-axis-preset",
+        choices=("auto", "identity", "fts300-tool"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--force-safety-frame",
+        choices=("auto", "tool", "base"),
+        default="auto",
+    )
+    parser.add_argument("--force-safety-inv-mass", type=float, default=0.40)
+    parser.add_argument("--force-safety-damping", type=float, default=18.0)
+    parser.add_argument("--force-safety-stiffness", type=float, default=80.0)
+    parser.add_argument("--torque-safety-inv-inertia", type=float, default=0.08)
+    parser.add_argument("--torque-safety-damping", type=float, default=10.0)
+    parser.add_argument("--torque-safety-stiffness", type=float, default=35.0)
+    parser.add_argument("--force-safety-max-vel", type=float, default=0.025)
+    parser.add_argument("--force-safety-max-correction-m", type=float, default=0.006)
+    parser.add_argument("--torque-safety-max-angular-vel", type=float, default=0.10)
+    parser.add_argument("--torque-safety-max-correction-rad", type=float, default=0.035)
+    parser.add_argument("--force-safety-deadband-n", type=float, default=0.30)
+    parser.add_argument("--torque-safety-deadband-nm", type=float, default=0.03)
     return parser.parse_args()
 
 
@@ -385,6 +441,219 @@ def calibrate_force_bias(force_reader: ForceReader, fps: float) -> np.ndarray:
     return bias
 
 
+def parse_xyz_vector(value: str, name: str, *, positive: bool = False) -> np.ndarray:
+    try:
+        parts = [float(part.strip()) for part in str(value).split(",")]
+    except ValueError as exc:
+        raise ValueError(f"{name} must be three comma-separated numbers, got {value!r}") from exc
+    if len(parts) == 1:
+        parts = parts * 3
+    if len(parts) != 3:
+        raise ValueError(f"{name} must contain one value or three comma-separated values.")
+    array = np.asarray(parts, dtype=np.float64)
+    if positive and np.any(array <= 0.0):
+        raise ValueError(f"{name} values must be positive.")
+    return array
+
+
+def parse_axis_order(value: str) -> np.ndarray:
+    try:
+        order = [int(part.strip()) for part in str(value).split(",")]
+    except ValueError as exc:
+        raise ValueError(
+            f"--force-safety-axis-order must be three comma-separated integers, got {value!r}"
+        ) from exc
+    if sorted(order) != [0, 1, 2]:
+        raise ValueError("--force-safety-axis-order must be a permutation of 0,1,2.")
+    return np.asarray(order, dtype=int)
+
+
+def resolve_force_safety_axis_mapping(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, str]:
+    preset = args.force_safety_axis_preset
+    if preset == "auto":
+        if args.force_source in ("modbus-serial", "modbus-tcp"):
+            preset = "fts300-tool"
+        else:
+            preset = "identity"
+
+    if preset == "fts300-tool":
+        axis_order = np.asarray([0, 1, 2], dtype=int)
+        axis_signs = np.asarray([1.0, 1.0, -1.0], dtype=np.float64)
+    elif preset == "identity":
+        axis_order = np.asarray([0, 1, 2], dtype=int)
+        axis_signs = np.ones(3, dtype=np.float64)
+    else:
+        raise ValueError(f"Unsupported force safety axis preset: {preset}")
+
+    if args.force_safety_axis_order is not None:
+        axis_order = parse_axis_order(args.force_safety_axis_order)
+    if args.force_safety_axis_signs is not None:
+        axis_signs = parse_xyz_vector(args.force_safety_axis_signs, "--force-safety-axis-signs")
+        axis_signs = np.where(axis_signs >= 0.0, 1.0, -1.0)
+    return axis_order, axis_signs, preset
+
+
+def resolve_force_safety_frame(args: argparse.Namespace) -> str:
+    if args.force_safety_frame != "auto":
+        return args.force_safety_frame
+    if args.force_source == "ur-rtde":
+        return "base"
+    return "tool"
+
+
+def skew(vec: np.ndarray) -> np.ndarray:
+    x, y, z = vec
+    return np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]], dtype=np.float64)
+
+
+def rotvec_to_matrix(rotvec: np.ndarray) -> np.ndarray:
+    theta = float(np.linalg.norm(rotvec))
+    if theta < 1e-12:
+        return np.eye(3)
+    axis = rotvec / theta
+    axis_skew = skew(axis)
+    return (
+        np.eye(3)
+        + np.sin(theta) * axis_skew
+        + (1.0 - np.cos(theta)) * (axis_skew @ axis_skew)
+    )
+
+
+def matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
+    cos_theta = (np.trace(rotation) - 1.0) / 2.0
+    theta = float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+    if theta < 1e-12:
+        return np.zeros(3)
+    axis = np.array(
+        [
+            rotation[2, 1] - rotation[1, 2],
+            rotation[0, 2] - rotation[2, 0],
+            rotation[1, 0] - rotation[0, 1],
+        ],
+        dtype=np.float64,
+    )
+    axis /= 2.0 * np.sin(theta)
+    return axis * theta
+
+
+class CartesianForceSafetyController:
+    def __init__(self, args: argparse.Namespace, dt: float) -> None:
+        force_threshold = parse_xyz_vector(args.force_safety_threshold_n, "--force-safety-threshold-n", positive=True)
+        torque_threshold = parse_xyz_vector(args.torque_safety_threshold_nm, "--torque-safety-threshold-nm", positive=True)
+        force_hard_stop = parse_xyz_vector(args.force_safety_hard_stop_n, "--force-safety-hard-stop-n", positive=True)
+        torque_hard_stop = parse_xyz_vector(args.torque_safety_hard_stop_nm, "--torque-safety-hard-stop-nm", positive=True)
+        self.threshold = np.concatenate([force_threshold, torque_threshold])
+        self.hard_stop = np.concatenate([force_hard_stop, torque_hard_stop])
+        self.force_frame = resolve_force_safety_frame(args)
+        self.axis_order, self.axis_signs, self.axis_preset = resolve_force_safety_axis_mapping(args)
+        self.tool_offset_m = float(args.force_torque_tool_offset_m)
+        self.inv_mass = np.concatenate(
+            [
+                np.full(3, float(args.force_safety_inv_mass), dtype=np.float64),
+                np.full(3, float(args.torque_safety_inv_inertia), dtype=np.float64),
+            ]
+        )
+        self.damping = np.concatenate(
+            [
+                np.full(3, float(args.force_safety_damping), dtype=np.float64),
+                np.full(3, float(args.torque_safety_damping), dtype=np.float64),
+            ]
+        )
+        self.stiffness = np.concatenate(
+            [
+                np.full(3, float(args.force_safety_stiffness), dtype=np.float64),
+                np.full(3, float(args.torque_safety_stiffness), dtype=np.float64),
+            ]
+        )
+        self.max_vel = np.concatenate(
+            [
+                np.full(3, abs(float(args.force_safety_max_vel)), dtype=np.float64),
+                np.full(3, abs(float(args.torque_safety_max_angular_vel)), dtype=np.float64),
+            ]
+        )
+        self.max_correction = np.concatenate(
+            [
+                np.full(3, abs(float(args.force_safety_max_correction_m)), dtype=np.float64),
+                np.full(3, abs(float(args.torque_safety_max_correction_rad)), dtype=np.float64),
+            ]
+        )
+        self.deadband = np.concatenate(
+            [
+                np.full(3, abs(float(args.force_safety_deadband_n)), dtype=np.float64),
+                np.full(3, abs(float(args.torque_safety_deadband_nm)), dtype=np.float64),
+            ]
+        )
+        self.dt = float(dt)
+        self.offset = np.zeros(6, dtype=np.float64)
+        self.velocity = np.zeros(6, dtype=np.float64)
+
+    def reset(self) -> None:
+        self.offset.fill(0.0)
+        self.velocity.fill(0.0)
+
+    def _wrench_in_base(self, force_torque: np.ndarray, current_tcp: np.ndarray) -> np.ndarray:
+        raw = np.asarray(force_torque, dtype=np.float64).reshape(-1)
+        if raw.size < 6:
+            raw = np.pad(raw, (0, 6 - raw.size))
+        force_raw = raw[:3]
+        torque_raw = raw[3:6]
+        force = force_raw[self.axis_order] * self.axis_signs
+        if self.axis_preset == "fts300-tool":
+            torque = np.asarray(
+                [
+                    (torque_raw[0] - force_raw[1] * self.tool_offset_m),
+                    (torque_raw[1] + self.tool_offset_m * force_raw[0]),
+                    -torque_raw[2],
+                ],
+                dtype=np.float64,
+            )
+        else:
+            torque = torque_raw[self.axis_order] * self.axis_signs
+
+        if self.force_frame == "tool":
+            rotation = rotvec_to_matrix(np.asarray(current_tcp, dtype=np.float64)[3:6])
+            force = rotation @ force
+            torque = rotation @ torque
+        return np.concatenate([force, torque])
+
+    def update(
+        self,
+        force_torque: np.ndarray,
+        current_tcp: np.ndarray,
+    ) -> tuple[np.ndarray, bool, np.ndarray]:
+        wrench = self._wrench_in_base(force_torque, current_tcp)
+        abs_wrench = np.abs(wrench)
+        active = abs_wrench > (self.threshold + self.deadband)
+        excess = np.zeros(6, dtype=np.float64)
+        excess[active] = np.sign(wrench[active]) * (abs_wrench[active] - self.threshold[active])
+
+        acceleration = (
+            -self.inv_mass * excess
+            - self.damping * self.velocity
+            - self.stiffness * self.offset
+        )
+        self.velocity += acceleration * self.dt
+        self.velocity = np.clip(self.velocity, -self.max_vel, self.max_vel)
+        self.offset += self.velocity * self.dt
+        self.offset = np.clip(self.offset, -self.max_correction, self.max_correction)
+
+        hard_stop = bool(np.any(abs_wrench > self.hard_stop))
+        return self.offset.copy(), hard_stop, wrench
+
+    def corrected_tcp_from_current(
+        self,
+        current_tcp: np.ndarray,
+        force_torque: np.ndarray,
+    ) -> tuple[np.ndarray, bool, np.ndarray, np.ndarray]:
+        correction, hard_stop, signed_wrench = self.update(force_torque, current_tcp)
+        corrected = np.asarray(current_tcp, dtype=np.float64).copy()
+        corrected[:3] += correction[:3]
+        correction_rotation = rotvec_to_matrix(correction[3:6])
+        current_rotation = rotvec_to_matrix(corrected[3:6])
+        corrected[3:6] = matrix_to_rotvec(correction_rotation @ current_rotation)
+        return corrected, hard_stop, correction, signed_wrench
+
+
 class RealUR5SmolVLAInfer:
     def __init__(self, args: argparse.Namespace) -> None:
         from lerobot.common.constants import OBS_STATE
@@ -595,6 +864,56 @@ def clip_and_filter_action(
     return action.astype(np.float32)
 
 
+def clip_action_delta(
+    action: np.ndarray,
+    current_joints: np.ndarray,
+    max_delta: float,
+) -> np.ndarray:
+    clipped = np.asarray(action, dtype=np.float32).copy()
+    current = np.asarray(current_joints, dtype=np.float32).reshape(-1)
+    if current.size >= 6:
+        delta = np.clip(clipped[:6] - current[:6], -max_delta, max_delta)
+        clipped[:6] = current[:6] + delta
+    clipped[6] = float(np.clip(clipped[6], 0.0, 1.0))
+    return clipped
+
+
+def apply_force_safety_to_action(
+    action: np.ndarray,
+    current_joints: np.ndarray,
+    current_tcp: np.ndarray,
+    force_torque: np.ndarray,
+    force_safety: CartesianForceSafetyController,
+    robot,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, bool, np.ndarray, np.ndarray]:
+    corrected_tcp, hard_stop, correction, signed_wrench = force_safety.corrected_tcp_from_current(
+        current_tcp,
+        force_torque,
+    )
+    safety_active = bool(np.any(np.abs(correction) > 1e-6))
+    if not safety_active and not hard_stop:
+        return action, False, correction, signed_wrench
+
+    corrected_action = np.asarray(action, dtype=np.float32).copy()
+    qnear = np.asarray(current_joints[:6] if hard_stop else action[:6], dtype=np.float64)
+    try:
+        safe_joints = np.asarray(
+            robot.inverse_kinematics(corrected_tcp, qnear=qnear),
+            dtype=np.float32,
+        )
+    except RuntimeError as exc:
+        print(f"Force safety IK failed, holding current arm joints: {exc}")
+        safe_joints = np.asarray(current_joints[:6], dtype=np.float32)
+
+    corrected_action[:6] = safe_joints[:6]
+    if hard_stop:
+        corrected_action[6] = float(current_joints[-1])
+    max_delta = args.max_startup_joint_delta if hard_stop else args.max_joint_delta
+    corrected_action = clip_action_delta(corrected_action, current_joints, max_delta)
+    return corrected_action.astype(np.float32), hard_stop, correction, signed_wrench
+
+
 def main() -> None:
     from gello.zmq_core.camera_node import ZMQClientCamera
     from gello.zmq_core.robot_node import ZMQClientRobot
@@ -633,6 +952,7 @@ def main() -> None:
     preview = PreviewWindow(args.preview)
 
     force_bias = np.zeros(6, dtype=np.float32)
+    force_safety = None
     previous_action = None
     period = 1.0 / max(1.0, args.fps)
     next_tick = time.time()
@@ -646,6 +966,19 @@ def main() -> None:
         if force_reader is not None:
             force_reader.read()
             force_bias = calibrate_force_bias(force_reader, args.fps)
+        if args.force_safety and force_reader is not None:
+            force_safety = CartesianForceSafetyController(args, dt=period)
+            print(
+                "Force safety enabled: "
+                f"force_threshold={force_safety.threshold[:3].tolist()} N, "
+                f"torque_threshold={force_safety.threshold[3:].tolist()} Nm, "
+                f"force_hard_stop={force_safety.hard_stop[:3].tolist()} N, "
+                f"torque_hard_stop={force_safety.hard_stop[3:].tolist()} Nm, "
+                f"frame={force_safety.force_frame}, "
+                f"axis_preset={force_safety.axis_preset}, "
+                f"axis_order={force_safety.axis_order.tolist()}, "
+                f"axis_signs={force_safety.axis_signs.tolist()}"
+            )
         if left_tactile is not None and right_tactile is not None:
             format_tactile_frame(left_tactile.read(), args.tactile_max_points)
             format_tactile_frame(right_tactile.read(), args.tactile_max_points)
@@ -662,6 +995,7 @@ def main() -> None:
 
             observations = robot.get_observations()
             joints = np.asarray(observations["joint_positions"], dtype=np.float32)
+            tcp_pose = robot.get_tcp_pose() if force_safety is not None else np.zeros(6, dtype=np.float64)
             base_image, _ = base_camera.read((args.image_size, args.image_size))
             wrist_image, _ = wrist_camera.read((args.image_size, args.image_size))
             base_image = resize_rgb(base_image, args.image_size)
@@ -689,6 +1023,30 @@ def main() -> None:
                 tactile_inputs,
             )
             action = clip_and_filter_action(raw_action, joints, previous_action, args, step)
+            safety_active = False
+            safety_hard_stop = False
+            safety_correction = np.zeros(6, dtype=np.float64)
+            signed_wrench = np.zeros(6, dtype=np.float64)
+            if force_safety is not None:
+                action, safety_hard_stop, safety_correction, signed_wrench = apply_force_safety_to_action(
+                    action,
+                    joints,
+                    tcp_pose,
+                    force_torque,
+                    force_safety,
+                    robot,
+                    args,
+                )
+                safety_active = bool(np.any(np.abs(safety_correction) > 1e-6))
+                if safety_active or safety_hard_stop:
+                    print(
+                        "Force safety "
+                        f"{'HARD ' if safety_hard_stop else ''}"
+                        f"force_xyz={np.array2string(signed_wrench[:3], precision=3)} "
+                        f"torque_xyz={np.array2string(signed_wrench[3:], precision=3)} "
+                        f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
+                        f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
+                    )
             previous_action = action.copy()
 
             if not args.dry_run:
@@ -700,9 +1058,10 @@ def main() -> None:
                 elapsed = time.time() - loop_start
                 print(
                     f"step={step:05d} elapsed={elapsed:.3f}s "
-                    f"q_cmd={np.array2string(action[:6], precision=4)} "
+                    # f"q_cmd={np.array2string(action[:6], precision=4)} "
                     f"gripper={action[6]:.3f} "
-                    f"force_torque={np.array2string(force_torque, precision=3)}"
+                    f"force_torque={np.array2string(force_torque, precision=3)} "
+                    # f"force_safety={'HARD' if safety_hard_stop else ('active' if safety_active else 'off')}"
                 )
             preview.show(base_image, wrist_image)
             step += 1
