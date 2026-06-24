@@ -86,7 +86,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=6001)
-    parser.add_argument("--robot-timeout-ms", type=int, default=3000)
+    parser.add_argument(
+        "--robot-timeout-ms",
+        type=int,
+        default=10000,
+        help="ZMQ timeout for robot requests; first RG2 command can take several seconds.",
+    )
     parser.add_argument("--wrist-camera-port", type=int, default=5000)
     parser.add_argument("--base-camera-port", type=int, default=5001)
     parser.add_argument("--camera-timeout-ms", type=int, default=20000)

@@ -8,7 +8,7 @@ import zmq
 from gello.robots.robot import Robot
 
 DEFAULT_ROBOT_PORT = 6000
-DEFAULT_CLIENT_TIMEOUT_MS = 3000
+DEFAULT_CLIENT_TIMEOUT_MS = 10000
 
 
 class ZMQServerRobot:

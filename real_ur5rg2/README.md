@@ -183,7 +183,7 @@ Keyboard controls match the simulation teleop style:
 - `W/S/A/D`: move TCP in the x/y plane
 - `R/F`: move TCP up/down
 - Arrow keys and `Q/E`: rotate TCP
-- `T/G`: screw down/up motion
+- `T/G`: toggle screw down/up motion; press the active key again to stop
 - `SPACE`: toggle RG2 open/close
 - `Z`: clear the current episode buffer
 - `ENTER`: save the current episode
@@ -210,6 +210,15 @@ Use `--tactile-max-points` on both commands if your Tac3D field has more or fewe
 
 Use `--overwrite` to recreate the dataset root, or `--resume` to append to an existing complete LeRobot dataset.
 If the dataset path already exists, the script will also ask interactively whether to overwrite, continue saving, or quit.
+
+
+## dataset clean
+```bash
+python real_ur5rg2/merge_lerobot_datasets.py \
+  --filter-root real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_merged \
+  --drop-existing-episodes 0-19 \
+  --in-place
+```
 
 ## 3. infer without force
 ```bash

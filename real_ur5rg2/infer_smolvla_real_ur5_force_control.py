@@ -26,7 +26,7 @@ for path in (PROJECT_ROOT, REFERENCE_ROOT):
 
 DEFAULT_POLICY_PATHS = (
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_real_ur5/checkpoints/last/pretrained_model",
-    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut/020000/pretrained_model",
+    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut_120/020000/pretrained_model",
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_v2/020000/pretrained_model",
 )
 DEFAULT_VLM_MODEL_PATHS = (
@@ -43,7 +43,7 @@ DEFAULT_VLM_MODEL_PATHS = (
 )
 
 FORCE_TARE_SECONDS = 2.0
-DEFAULT_FORCE_SAFETY_THRESHOLD_N = 5.0
+DEFAULT_FORCE_SAFETY_THRESHOLD_N = 10.0
 DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
 DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
 DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
     parser.add_argument(
         "--root",
-        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut",
+        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_merged",
         help="LeRobot dataset root used for metadata/stats.",
     )
     parser.add_argument("--policy-path", default=None)
@@ -91,7 +91,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=6001)
-    parser.add_argument("--robot-timeout-ms", type=int, default=3000)
+    parser.add_argument(
+        "--robot-timeout-ms",
+        type=int,
+        default=10000,
+        help="ZMQ timeout for robot requests; first RG2 command can take several seconds.",
+    )
     parser.add_argument("--wrist-camera-port", type=int, default=5000)
     parser.add_argument("--base-camera-port", type=int, default=5001)
     parser.add_argument("--camera-timeout-ms", type=int, default=20000)
@@ -1042,10 +1047,10 @@ def main() -> None:
                     print(
                         "Force safety "
                         f"{'HARD ' if safety_hard_stop else ''}"
-                        f"force_xyz={np.array2string(signed_wrench[:3], precision=3)} "
-                        f"torque_xyz={np.array2string(signed_wrench[3:], precision=3)} "
-                        f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
-                        f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
+                        # f"force_xyz={np.array2string(signed_wrench[:3], precision=3)} "
+                        # f"torque_xyz={np.array2string(signed_wrench[3:], precision=3)} "
+                        # f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
+                        # f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
                     )
             previous_action = action.copy()
 
@@ -1057,7 +1062,7 @@ def main() -> None:
             if step % max(1, args.print_every) == 0:
                 elapsed = time.time() - loop_start
                 print(
-                    f"step={step:05d} elapsed={elapsed:.3f}s "
+                    # f"step={step:05d} elapsed={elapsed:.3f}s "
                     # f"q_cmd={np.array2string(action[:6], precision=4)} "
                     f"gripper={action[6]:.3f} "
                     f"force_torque={np.array2string(force_torque, precision=3)} "

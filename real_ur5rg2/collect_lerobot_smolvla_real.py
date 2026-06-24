@@ -134,6 +134,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=6001)
+    parser.add_argument(
+        "--robot-timeout-ms",
+        type=int,
+        default=10000,
+        help="ZMQ timeout for robot requests; first RG2 command can take several seconds.",
+    )
     parser.add_argument("--wrist-camera-port", type=int, default=5000)
     parser.add_argument("--base-camera-port", type=int, default=5001)
     parser.add_argument(
@@ -351,7 +357,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rot-step", type=float, default=0.03)
     parser.add_argument("--shift-speed-scale", type=float, default=5)
     parser.add_argument("--screw-pitch", type=float, default=0.0025)
-    parser.add_argument("--screw-rot-step", type=float, default=0.02)
+    parser.add_argument(
+        "--screw-rot-step",
+        type=float,
+        default=0.02,
+        help="Screw rotation increment in rad per control frame when --screw-rpm is unset.",
+    )
+    parser.add_argument(
+        "--screw-rpm",
+        type=float,
+        default=None,
+        help="Screw speed in revolutions per minute; overrides --screw-rot-step.",
+    )
     parser.add_argument(
         "--reset-max-joint-step-rad",
         type=float,
@@ -906,6 +923,7 @@ class KeyboardTeleop:
         self.screen = pygame.display.set_mode((520, 160))
         pygame.display.set_caption("UR5 RG2 keyboard collection")
         self.gripper_closed = True
+        self.screw_direction = 0
         self._paint((80, 80, 80))
 
     def _paint(self, color: tuple[int, int, int]) -> None:
@@ -922,10 +940,13 @@ class KeyboardTeleop:
             if pygame_event.type != self.pygame.KEYDOWN:
                 continue
             if pygame_event.key == self.pygame.K_z:
+                self.screw_direction = 0
                 event = "reset"
             elif pygame_event.key == self.pygame.K_RETURN:
+                self.screw_direction = 0
                 event = "done"
             elif pygame_event.key == self.pygame.K_ESCAPE:
+                self.screw_direction = 0
                 event = "quit"
             elif pygame_event.key == self.pygame.K_SPACE:
                 self.gripper_closed = not self.gripper_closed
@@ -935,6 +956,12 @@ class KeyboardTeleop:
                 event = "random_reset_pose"
             elif pygame_event.key == self.pygame.K_o:
                 event = "capture_reset_orientation"
+            elif pygame_event.key == self.pygame.K_t:
+                self.screw_direction = 0 if self.screw_direction == 1 else 1
+                print("Screw down enabled" if self.screw_direction else "Screw motion stopped")
+            elif pygame_event.key == self.pygame.K_g:
+                self.screw_direction = 0 if self.screw_direction == -1 else -1
+                print("Screw up enabled" if self.screw_direction else "Screw motion stopped")
 
         keys = self.pygame.key.get_pressed()
         move_step = args.move_step
@@ -971,13 +998,16 @@ class KeyboardTeleop:
         if keys[self.pygame.K_e]:
             drot = rotation_matrix(-args.rot_step, (0.0, 0.0, 1.0))
 
-        screw_linear_step = args.screw_pitch * args.screw_rot_step / (2 * np.pi)
-        if keys[self.pygame.K_t]:
+        screw_rot_step = args.screw_rot_step
+        if args.screw_rpm is not None:
+            screw_rot_step = 2.0 * np.pi * float(args.screw_rpm) / (60.0 * args.fps)
+        screw_linear_step = args.screw_pitch * screw_rot_step / (2.0 * np.pi)
+        if self.screw_direction == 1:
             dpos += np.array([0.0, 0.0, -screw_linear_step])
-            drot = rotation_matrix(args.screw_rot_step, (0.0, 0.0, 1.0))
-        if keys[self.pygame.K_g]:
+            drot = rotation_matrix(screw_rot_step, (0.0, 0.0, 1.0))
+        elif self.screw_direction == -1:
             dpos += np.array([0.0, 0.0, screw_linear_step])
-            drot = rotation_matrix(-args.screw_rot_step, (0.0, 0.0, 1.0))
+            drot = rotation_matrix(-screw_rot_step, (0.0, 0.0, 1.0))
 
         has_motion = bool(np.any(dpos) or not np.allclose(drot, np.eye(3)))
         self._paint((0, 140, 0) if has_motion else (80, 80, 80))
@@ -1062,7 +1092,11 @@ class PreviewWindow:
 def main() -> None:
     args = parse_args()
 
-    robot = ZMQClientRobot(port=args.robot_port, host=args.host)
+    robot = ZMQClientRobot(
+        port=args.robot_port,
+        host=args.host,
+        timeout_ms=args.robot_timeout_ms,
+    )
     base_camera = ZMQClientCamera(port=args.base_camera_port, host=args.host)
     wrist_camera = ZMQClientCamera(port=args.wrist_camera_port, host=args.host)
     force_reader = ForceReader(args, robot) if args.collect_force else None
@@ -1150,7 +1184,7 @@ def main() -> None:
     print("Keyboard teleop controls:")
     print("  W/S/A/D/R/F: translate TCP")
     print("  Arrow keys + Q/E: rotate TCP")
-    print("  T/G: screw motion")
+    print("  T/G: toggle screw down/up; press the active key again to stop")
     print("  P: start recording")
     print("  L: move to randomized reset pose through IK")
     print("  O: capture current TCP orientation for L reset")
