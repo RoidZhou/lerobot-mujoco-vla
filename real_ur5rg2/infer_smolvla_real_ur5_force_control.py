@@ -43,14 +43,17 @@ DEFAULT_VLM_MODEL_PATHS = (
 )
 
 FORCE_TARE_SECONDS = 2.0
-DEFAULT_FORCE_SAFETY_THRESHOLD_N = 10.0
-DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
+DEFAULT_FORCE_SAFETY_THRESHOLD_N = 20.0
+DEFAULT_FORCE_SAFETY_HARD_STOP_N = 25.0
 DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
 DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
 DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M = 0.042 - 0.0034
 FORCE_KEYS = (
     "observation.force_torque",
+    "force_torque",
     "observation.force",
+    "force",
+    "effort",
 )
 TACTILE_KEYS = (
     "observation.tactile_left.displacement",
@@ -85,6 +88,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--policy-path", default=None)
     parser.add_argument("--vlm-model-name", default=None)
+    parser.add_argument(
+        "--force-vqvae-ckpt",
+        default=None,
+        help="Override policy.force_vqvae_ckpt for force_vqvae inference.",
+    )
+    parser.add_argument(
+        "--effort-key",
+        default=None,
+        help="Override policy.effort_key, e.g. observation.force_torque.",
+    )
     parser.add_argument("--task", default="Insert the bolt into the nut.")
     parser.add_argument("--device", default=None)
     parser.add_argument("--fps", type=float, default=20.0)
@@ -153,7 +166,7 @@ def parse_args() -> argparse.Namespace:
         choices=("modbus-serial", "modbus-tcp", "ur-rtde"),
         default="modbus-serial",
     )
-    parser.add_argument("--force-serial-port", default=None)
+    parser.add_argument("--force-serial-port", default="/dev/ttyUSB0")
     parser.add_argument("--force-serial-slave-address", type=int, default=9)
     parser.add_argument("--force-serial-register-address", type=int, default=180)
     parser.add_argument("--force-serial-function-code", type=int, default=3)
@@ -216,7 +229,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torque-safety-damping", type=float, default=10.0)
     parser.add_argument("--torque-safety-stiffness", type=float, default=35.0)
     parser.add_argument("--force-safety-max-vel", type=float, default=0.025)
-    parser.add_argument("--force-safety-max-correction-m", type=float, default=0.006)
+    parser.add_argument("--force-safety-max-correction-m", type=float, default=0.002)
     parser.add_argument("--torque-safety-max-angular-vel", type=float, default=0.10)
     parser.add_argument("--torque-safety-max-correction-rad", type=float, default=0.035)
     parser.add_argument("--force-safety-deadband-n", type=float, default=0.30)
@@ -676,6 +689,10 @@ class RealUR5SmolVLAInfer:
         metadata = LeRobotDatasetMetadata(args.repo_id, root=args.root)
         policy_features = dataset_to_policy_features(metadata.features)
         config = load_smolvla_config(self.policy_path, self.device, self.vlm_model_name)
+        if args.force_vqvae_ckpt is not None:
+            config.force_vqvae_ckpt = str(Path(args.force_vqvae_ckpt).expanduser())
+        if args.effort_key is not None:
+            config.effort_key = args.effort_key
         config.input_features = {
             key: ft for key, ft in policy_features.items() if ft.type is not FeatureType.ACTION
         }
@@ -822,7 +839,15 @@ class RealUR5SmolVLAInfer:
         )
         torch_module = ensure_torch()
         with torch_module.no_grad():
-            action = self.policy.select_action(batch)
+            if (
+                getattr(self.policy.config, "force_refine_enabled", False)
+                and getattr(self.policy, "_force_refine_state", None) is not None
+                and len(self.policy._queues.get("action", [])) > 0
+            ):
+                self.policy.refine_action_chunk(batch)
+                action = self.policy._queues["action"].popleft()
+            else:
+                action = self.policy.select_action(batch)
         action = action[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         return action[:7]
 
@@ -1062,11 +1087,11 @@ def main() -> None:
             if step % max(1, args.print_every) == 0:
                 elapsed = time.time() - loop_start
                 print(
-                    # f"step={step:05d} elapsed={elapsed:.3f}s "
+                    f"step={step:05d} elapsed={elapsed:.3f}s "
                     # f"q_cmd={np.array2string(action[:6], precision=4)} "
-                    f"gripper={action[6]:.3f} "
+                    # f"gripper={action[6]:.3f} "
                     f"force_torque={np.array2string(force_torque, precision=3)} "
-                    # f"force_safety={'HARD' if safety_hard_stop else ('active' if safety_active else 'off')}"
+                    f"force_safety={'HARD' if safety_hard_stop else ('active' if safety_active else 'off')}"
                 )
             preview.show(base_image, wrist_image)
             step += 1
@@ -1084,4 +1109,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    sys.argv = [
+        "infer_smolvla_real_ur5_force_control.py",
+        "--task", "Insert the bolt into the nut.",
+        "--root", "/home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_total",
+        "--policy-path", "/home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut_speedup_total/020000/pretrained_model",
+        "--collect-force",
+        "--force-serial-port", "/dev/ttyUSB0",
+        "--force-serial-timeout-s", "0.1",
+        "--force-serial-retries", "5",
+        "--force-safety-threshold-n", "10,10,20"
+    ]
     main()

@@ -36,12 +36,12 @@ python real_ur5rg2/experiments/launch_nodes.py --robot ur \
 Before starting `launch_nodes.py`, start the Tac3D core senders in separate terminals:
 
 ```bash
-cd ~/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
+cd /home/mel/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
 ./Tac3D -c config/DL1-GWM0013 -i 127.0.0.1 -p 9988
 ```
 
 ```bash
-cd ~/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
+cd /home/mel/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core
 ./Tac3D -c config/DL1-GWM0018 -i 127.0.0.1 -p 9988
 ```
 
@@ -59,6 +59,14 @@ python real_ur5rg2/experiments/launch_nodes.py \
   --camera-fps 30 \
   --left-tactile-device-id DL1-GWM0013 \
   --right-tactile-device-id DL1-GWM0018
+
+python real_ur5rg2/collect_lerobot_smolvla_real.py \
+  --task "Insert the bolt into the nut." \
+  --num-episodes 20 \
+  --no-preview \
+  --no-collect-force \
+  --collect-tactile
+```
 ```
 
 To test the pipeline with one sensor only, point both logical fingers at the same received sensor.
@@ -227,8 +235,8 @@ python real_ur5rg2/experiments/launch_nodes.py --robot ur \
 
 python real_ur5rg2/infer_smolvla_real_ur5.py \
   --task "Insert the bolt into the nut." \
-  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_clean \
-  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force/020000/pretrained_model \
+  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_merged \
+  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_boltnut_100_without_force/020000/pretrained_model \
   --collect-force \
   --force-serial-port /dev/ttyUSB0 \
   --force-serial-timeout-s 0.1 \
@@ -241,11 +249,24 @@ python real_ur5rg2/infer_smolvla_real_ur5.py \
 ```bash
 python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --task "Insert the bolt into the nut." \
-  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut \
-  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut/020000/pretrained_model \
+  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_total \
+  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut_speedup_total/020000/pretrained_model \
   --collect-force \
   --force-serial-port /dev/ttyUSB0 \
   --force-serial-timeout-s 0.1 \
   --force-serial-retries 5 \
   --force-safety-threshold-n 10,10,20
+
+
+python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
+  --task "Insert the bolt into the nut." \
+  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/checkpoints_smolvla_force_boltnut_speedup_total_200 \
+  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_wo_force_vqvae_boltnut_speedup_total200_4w/035000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --effort-key observation.force_torque \
+  --force-vqvae-ckpt /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/force_vqvae/latest.pt
 ```

@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
         description="Collect LeRobot/SmolVLA episodes on a real UR5 + RG2 with keyboard teleop."
     )
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
-    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut")
+    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speed_627_test")
     parser.add_argument("--task", default="Insert the bolt into the nut.")
     parser.add_argument("--num-episodes", type=int, default=20)
     parser.add_argument("--fps", type=int, default=20)
@@ -324,7 +324,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-safety-max-correction-m",
         type=float,
-        default=0.006,
+        default=0.002,
         help="Max absolute Cartesian correction in m.",
     )
     parser.add_argument(
@@ -360,7 +360,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--screw-rot-step",
         type=float,
-        default=0.02,
+        default=0.07,
         help="Screw rotation increment in rad per control frame when --screw-rpm is unset.",
     )
     parser.add_argument(
@@ -372,7 +372,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reset-max-joint-step-rad",
         type=float,
-        default=0.1,
+        default=0.3,
         help="Max joint step per control frame when moving to L reset through IK.",
     )
     parser.add_argument("--overwrite", action="store_true")
@@ -922,7 +922,7 @@ class KeyboardTeleop:
         pygame.init()
         self.screen = pygame.display.set_mode((520, 160))
         pygame.display.set_caption("UR5 RG2 keyboard collection")
-        self.gripper_closed = True
+        self.gripper_closed = False
         self.screw_direction = 0
         self._paint((80, 80, 80))
 
@@ -1263,7 +1263,7 @@ def main() -> None:
                         robot.inverse_kinematics(reset_tcp, qnear=current_joints[:6]),
                         dtype=np.float64,
                     )
-                    reset_target_joints[5] -= 2.5 * np.pi
+                    reset_target_joints[5] -= 0.5 * np.pi
                 except RuntimeError as exc:
                     print(
                         "Reset IK failed. Restart launch_nodes.py so the robot "
