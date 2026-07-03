@@ -257,16 +257,29 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --force-serial-retries 5 \
   --force-safety-threshold-n 10,10,20
 
-
+# smolvla
 python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --task "Insert the bolt into the nut." \
-  --root /home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/checkpoints_smolvla_force_boltnut_speedup_total_200 \
-  --policy-path /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_wo_force_vqvae_boltnut_speedup_total200_4w/035000/pretrained_model \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_200 \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_wo_force_vqvae_boltnut_speedup_total200_4w/035000/pretrained_model \
   --collect-force \
   --force-serial-port /dev/ttyUSB0 \
   --force-serial-timeout-s 0.1 \
   --force-serial-retries 5 \
   --force-safety-threshold-n 10,10,20 \
   --effort-key observation.force_torque \
-  --force-vqvae-ckpt /home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/force_vqvae/latest.pt
+  --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae/latest.pt
+
+# pi0
+python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
+  --task "Insert the bolt into the nut." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_200 \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_force_vqvae_boltnut_speedup_total200_4w/040000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --effort-key observation.force_torque \
+  --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae/latest.pt
 ```

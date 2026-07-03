@@ -26,25 +26,25 @@ for path in (PROJECT_ROOT, REFERENCE_ROOT):
 
 DEFAULT_POLICY_PATHS = (
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_real_ur5/checkpoints/last/pretrained_model",
-    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut_120/020000/pretrained_model",
+    PROJECT_ROOT / "home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut/020000/pretrained_model",
     PROJECT_ROOT / "gufic_env/flow_matching/checkpoints_smolvla_v2/020000/pretrained_model",
 )
 DEFAULT_VLM_MODEL_PATHS = (
     Path(
-        "/home/mel/.cache/huggingface/hub/"
+        "/home/lab202/.cache/huggingface/hub/"
         "models--HuggingFaceTB--SmolVLM2-500M-Video-Instruct/snapshots/"
         "7b375e1b73b11138ff12fe22c8f2822d8fe03467"
     ),
     Path(
-        "/home/mel/.cache/huggingface/hub/"
+        "/home/lab202/.cache/huggingface/hub/"
         "models--HuggingFaceTB--SmolVLM2-500M-Video-Instruct/snapshots/"
         "7b375e1b73b11138ff12fe22c8f2822d8fe03467"
     ),
 )
 
 FORCE_TARE_SECONDS = 2.0
-DEFAULT_FORCE_SAFETY_THRESHOLD_N = 20.0
-DEFAULT_FORCE_SAFETY_HARD_STOP_N = 25.0
+DEFAULT_FORCE_SAFETY_THRESHOLD_N = 5.0
+DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
 DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
 DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
 DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M = 0.042 - 0.0034
@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
     parser.add_argument(
         "--root",
-        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_merged",
+        default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut",
         help="LeRobot dataset root used for metadata/stats.",
     )
     parser.add_argument("--policy-path", default=None)
@@ -104,12 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=6001)
-    parser.add_argument(
-        "--robot-timeout-ms",
-        type=int,
-        default=10000,
-        help="ZMQ timeout for robot requests; first RG2 command can take several seconds.",
-    )
+    parser.add_argument("--robot-timeout-ms", type=int, default=8000)
     parser.add_argument("--wrist-camera-port", type=int, default=5000)
     parser.add_argument("--base-camera-port", type=int, default=5001)
     parser.add_argument("--camera-timeout-ms", type=int, default=20000)
@@ -166,7 +161,7 @@ def parse_args() -> argparse.Namespace:
         choices=("modbus-serial", "modbus-tcp", "ur-rtde"),
         default="modbus-serial",
     )
-    parser.add_argument("--force-serial-port", default="/dev/ttyUSB0")
+    parser.add_argument("--force-serial-port", default=None)
     parser.add_argument("--force-serial-slave-address", type=int, default=9)
     parser.add_argument("--force-serial-register-address", type=int, default=180)
     parser.add_argument("--force-serial-function-code", type=int, default=3)
@@ -229,7 +224,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torque-safety-damping", type=float, default=10.0)
     parser.add_argument("--torque-safety-stiffness", type=float, default=35.0)
     parser.add_argument("--force-safety-max-vel", type=float, default=0.025)
-    parser.add_argument("--force-safety-max-correction-m", type=float, default=0.002)
+    parser.add_argument("--force-safety-max-correction-m", type=float, default=0.006)
     parser.add_argument("--torque-safety-max-angular-vel", type=float, default=0.10)
     parser.add_argument("--torque-safety-max-correction-rad", type=float, default=0.035)
     parser.add_argument("--force-safety-deadband-n", type=float, default=0.30)
@@ -247,6 +242,9 @@ def first_existing_path(paths) -> str | None:
 def resolve_policy_path(policy_path: str | None) -> str:
     if policy_path:
         return str(policy_path)
+    env_path = os.environ.get("VLA_POLICY_PATH")
+    if env_path:
+        return env_path
     env_path = os.environ.get("SMOLVLA_POLICY_PATH")
     if env_path:
         return env_path
@@ -276,7 +274,8 @@ def resolve_vlm_model_name(vlm_model_name: str | None) -> str:
     )
 
 
-def load_smolvla_config(policy_path: str, device: str, vlm_model_name: str):
+def load_vla_config(policy_path: str, device: str, vlm_model_name: str | None):
+    from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
     from lerobot.common.policies.smolvla.configuration_smolvla import SmolVLAConfig
     from lerobot.configs.policies import PreTrainedConfig
 
@@ -292,21 +291,29 @@ def load_smolvla_config(policy_path: str, device: str, vlm_model_name: str):
         with open(train_config_path, "r", encoding="utf-8") as f:
             train_config = json.load(f)
         policy_config = train_config.get("policy", {})
-        if policy_config.get("type") != "smolvla":
+        policy_type = policy_config.get("type")
+        if policy_type not in {"smolvla", "pi0"}:
             raise RuntimeError(
-                f"train_config.json does not contain a SmolVLA policy config: {train_config_path}"
+                f"train_config.json does not contain a supported SmolVLA/PI0 policy config: {train_config_path}"
             ) from exc
 
-        valid_fields = {field.name for field in fields(SmolVLAConfig)}
+        config_cls = SmolVLAConfig if policy_type == "smolvla" else PI0Config
+        valid_fields = {field.name for field in fields(config_cls)}
         skip_fields = {"type", "input_features", "output_features", "normalization_mapping"}
         kwargs = {
             key: value
             for key, value in policy_config.items()
             if key in valid_fields and key not in skip_fields
         }
-        config = SmolVLAConfig(**kwargs)
+        config = config_cls(**kwargs)
 
-    config.vlm_model_name = vlm_model_name
+    policy_type = getattr(config, "type", getattr(config, "policy_type", None))
+    if policy_type is None:
+        policy_type = "smolvla" if isinstance(config, SmolVLAConfig) else "pi0"
+    if policy_type == "smolvla":
+        config.vlm_model_name = resolve_vlm_model_name(vlm_model_name)
+    elif vlm_model_name is not None:
+        print("--vlm-model-name is ignored for PI0; PI0 uses its PaliGemma tokenizer/model config.")
     config.device = device
     return config
 
@@ -672,11 +679,14 @@ class CartesianForceSafetyController:
         return corrected, hard_stop, correction, signed_wrench
 
 
-class RealUR5SmolVLAInfer:
+class RealUR5VLAInfer:
     def __init__(self, args: argparse.Namespace) -> None:
         from lerobot.common.constants import OBS_STATE
         from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
         from lerobot.common.datasets.utils import dataset_to_policy_features
+        from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
+        from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
+        from lerobot.common.policies.pi0.modeling_pi0 import pad_vector as pi0_pad_vector
         from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy, pad_vector
         from lerobot.configs.types import FeatureType
 
@@ -684,11 +694,10 @@ class RealUR5SmolVLAInfer:
         self.args = args
         self.device = args.device or ("cuda" if torch_module.cuda.is_available() else "cpu")
         self.policy_path = resolve_policy_path(args.policy_path)
-        self.vlm_model_name = resolve_vlm_model_name(args.vlm_model_name)
 
         metadata = LeRobotDatasetMetadata(args.repo_id, root=args.root)
         policy_features = dataset_to_policy_features(metadata.features)
-        config = load_smolvla_config(self.policy_path, self.device, self.vlm_model_name)
+        config = load_vla_config(self.policy_path, self.device, args.vlm_model_name)
         if args.force_vqvae_ckpt is not None:
             config.force_vqvae_ckpt = str(Path(args.force_vqvae_ckpt).expanduser())
         if args.effort_key is not None:
@@ -700,7 +709,11 @@ class RealUR5SmolVLAInfer:
             key: ft for key, ft in policy_features.items() if ft.type is FeatureType.ACTION
         }
 
-        self.policy = SmolVLAPolicy.from_pretrained(
+        self.policy_type = "pi0" if isinstance(config, PI0Config) else "smolvla"
+        policy_cls = PI0Policy if self.policy_type == "pi0" else SmolVLAPolicy
+        state_pad_vector = pi0_pad_vector if self.policy_type == "pi0" else pad_vector
+
+        self.policy = policy_cls.from_pretrained(
             self.policy_path,
             config=config,
             dataset_stats=metadata.stats,
@@ -712,7 +725,12 @@ class RealUR5SmolVLAInfer:
         state_keys = [
             key for key, ft in self.policy.config.input_features.items() if ft.type is FeatureType.STATE
         ]
-        self.force_keys = [key for key in FORCE_KEYS if key in state_keys]
+        input_feature_keys = set(self.policy.config.input_features)
+        configured_effort_key = getattr(self.policy.config, "effort_key", None)
+        self.force_keys = []
+        for key in (configured_effort_key, *FORCE_KEYS):
+            if key and key in input_feature_keys and key not in self.force_keys:
+                self.force_keys.append(key)
         self.tactile_keys = [key for key in TACTILE_KEYS if key in state_keys]
         non_robot_state_keys = set(self.force_keys) | set(self.tactile_keys)
         non_force_state_keys = [key for key in state_keys if key not in non_robot_state_keys]
@@ -723,14 +741,14 @@ class RealUR5SmolVLAInfer:
         elif non_force_state_keys:
             self.state_key = non_force_state_keys[0]
         else:
-            raise ValueError("SmolVLA policy has no robot state input feature.")
+            raise ValueError(f"{self.policy_type} policy has no robot state input feature.")
 
         if self.state_key != OBS_STATE:
 
             def prepare_state(policy_self, batch):
                 state = batch[self.state_key]
                 state = state[:, -1, :] if state.ndim > 2 else state
-                return pad_vector(state, policy_self.config.max_state_dim)
+                return state_pad_vector(state, policy_self.config.max_state_dim)
 
             def prepare_language(policy_self, batch):
                 device = batch[self.state_key].device
@@ -738,9 +756,10 @@ class RealUR5SmolVLAInfer:
                 if len(tasks) == 1:
                     tasks = [tasks[0] for _ in range(batch[self.state_key].shape[0])]
                 tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
+                padding = getattr(policy_self.config, "pad_language_to", "max_length")
                 tokenized_prompt = policy_self.language_tokenizer.__call__(
                     tasks,
-                    padding=policy_self.config.pad_language_to,
+                    padding=padding,
                     padding_side="right",
                     max_length=policy_self.config.tokenizer_max_length,
                     return_tensors="pt",
@@ -754,11 +773,17 @@ class RealUR5SmolVLAInfer:
 
         action_features = list(self.policy.config.output_features.values())
         if not action_features or int(action_features[0].shape[0]) < 7:
-            raise ValueError("Expected a SmolVLA action feature with at least 7 dimensions.")
+            raise ValueError(f"Expected a {self.policy_type} action feature with at least 7 dimensions.")
 
-        print(f"Loaded policy: {self.policy_path}")
+        print(f"Loaded {self.policy_type} policy: {self.policy_path}")
         print(f"Dataset metadata: repo_id={args.repo_id}, root={args.root}")
         print(f"Robot state key: {self.state_key}; force keys: {self.force_keys or 'none'}")
+        print(
+            "Force tokenizer: "
+            f"{getattr(self.policy.config, 'effort_tokenizer', 'raw')}; "
+            f"force_vqvae_ckpt={getattr(self.policy.config, 'force_vqvae_ckpt', '')}; "
+            f"force_refine_enabled={getattr(self.policy.config, 'force_refine_enabled', False)}"
+        )
         print(f"Tactile keys: {self.tactile_keys or 'none'}")
 
     def _select_image_for_key(self, key: str, wrist_image: np.ndarray, base_image: np.ndarray) -> np.ndarray:
@@ -951,7 +976,7 @@ def main() -> None:
 
     args = parse_args()
     args.dry_run = args.dry_run or args.no_command
-    infer = RealUR5SmolVLAInfer(args)
+    infer = RealUR5VLAInfer(args)
 
     robot = ZMQClientRobot(port=args.robot_port, host=args.host, timeout_ms=args.robot_timeout_ms)
     base_camera = ZMQClientCamera(
@@ -1013,7 +1038,7 @@ def main() -> None:
             format_tactile_frame(left_tactile.read(), args.tactile_max_points)
             format_tactile_frame(right_tactile.read(), args.tactile_max_points)
 
-        print("Starting SmolVLA real UR5 inference. Press Ctrl-C to stop.")
+        print(f"Starting {infer.policy_type} real UR5 inference. Press Ctrl-C to stop.")
         step = 0
         while args.max_steps <= 0 or step < args.max_steps:
             now = time.time()
@@ -1072,10 +1097,10 @@ def main() -> None:
                     print(
                         "Force safety "
                         f"{'HARD ' if safety_hard_stop else ''}"
-                        # f"force_xyz={np.array2string(signed_wrench[:3], precision=3)} "
-                        # f"torque_xyz={np.array2string(signed_wrench[3:], precision=3)} "
-                        # f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
-                        # f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
+                        f"force_xyz={np.array2string(signed_wrench[:3], precision=3)} "
+                        f"torque_xyz={np.array2string(signed_wrench[3:], precision=3)} "
+                        f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
+                        f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
                     )
             previous_action = action.copy()
 
@@ -1089,9 +1114,9 @@ def main() -> None:
                 print(
                     f"step={step:05d} elapsed={elapsed:.3f}s "
                     # f"q_cmd={np.array2string(action[:6], precision=4)} "
-                    # f"gripper={action[6]:.3f} "
+                    f"gripper={action[6]:.3f} "
                     f"force_torque={np.array2string(force_torque, precision=3)} "
-                    f"force_safety={'HARD' if safety_hard_stop else ('active' if safety_active else 'off')}"
+                    # f"force_safety={'HARD' if safety_hard_stop else ('active' if safety_active else 'off')}"
                 )
             preview.show(base_image, wrist_image)
             step += 1
@@ -1109,15 +1134,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.argv = [
-        "infer_smolvla_real_ur5_force_control.py",
-        "--task", "Insert the bolt into the nut.",
-        "--root", "/home/mel/ybzhou/lerobot-mujoco-tutorial/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_total",
-        "--policy-path", "/home/mel/ybzhou/lerobot-mujoco-tutorial/ckpt/checkpoints_smolvla_force_boltnut_speedup_total/020000/pretrained_model",
-        "--collect-force",
-        "--force-serial-port", "/dev/ttyUSB0",
-        "--force-serial-timeout-s", "0.1",
-        "--force-serial-retries", "5",
-        "--force-safety-threshold-n", "10,10,20"
-    ]
     main()
