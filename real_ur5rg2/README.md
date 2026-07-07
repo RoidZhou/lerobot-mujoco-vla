@@ -145,6 +145,22 @@ If OpenCV was installed without GUI support, disable the camera preview:
 python real_ur5rg2/collect_lerobot_smolvla_real.py --task "Insert the bolt into the nut." --num-episodes 20 --no-preview
 ```
 
+Tac3D remains the default tactile backend. To collect Paxini S2716_core tactile
+data instead, switch `--tactile-source` and pass the USB serial port. One Paxini
+sensor is stored as the left tactile stream and the right stream is zero-filled;
+pass `--paxini-right-port` as well if you use two Paxini sensors.
+
+```bash
+python real_ur5rg2/collect_lerobot_smolvla_real.py \
+  --task "Insert the bolt into the nut." \
+  --num-episodes 20 \
+  --no-preview \
+  --collect-tactile \
+  --tactile-source paxini \
+  --paxini-left-port /dev/ttyUSB0 \
+  --tactile-max-points 400
+```
+
 To reduce excessive x/y/z contact force and torque during bolt/nut collection, enable the
 FTS-300-S force reader. The collector will tare the sensor, map the raw Modbus
 axes like `ur5moverealrobot3.py` (`[Fx,Fy,Fz] -> [-Fx,-Fz,-Fy]` in tool frame),

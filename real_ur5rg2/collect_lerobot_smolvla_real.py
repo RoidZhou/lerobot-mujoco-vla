@@ -33,6 +33,22 @@ TACTILE_DATASET_KEYS = TACTILE_FIELD_KEYS + (
     "observation.tactile_right.wrench",
     "observation.tactile.timestamp",
 )
+PAXINI_DISTRIBUTED_LENGTHS = {
+    "S1813_elite": 93,
+    "S2015_elite": 156,
+    "S1813_core": 153,
+    "S2716_core": 348,
+    "S3013_core": 288,
+    "M2826_omega": 381,
+    "L3530_omega": 405,
+    "S1610_elite": 75,
+    "M2324_core": 204,
+    "M3025_core": 231,
+    "L5325_omega": 717,
+    "M2020_elite": 27,
+}
+PAXINI_DEFAULT_MODEL = "S2716_core"
+PAXINI_PORT_READY_DELAY = 2.5
 FORCE_TORQUE_KEY = "observation.force_torque"
 FORCE_TARE_SECONDS = 2.0
 DEFAULT_FORCE_SAFETY_THRESHOLD_N = 5.0
@@ -146,12 +162,44 @@ def parse_args() -> argparse.Namespace:
         "--collect-tactile",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Collect Tac3D tactile fields. Use --no-collect-tactile to disable.",
+        help="Collect tactile fields. Use --no-collect-tactile to disable.",
+    )
+    parser.add_argument(
+        "--tactile-source",
+        choices=("tac3d", "paxini"),
+        default="tac3d",
+        help="Tactile sensor backend: Tac3D ZMQ nodes or Paxini S2716_core serial sensors.",
     )
     parser.add_argument("--left-tactile-port", type=int, default=5100)
     parser.add_argument("--right-tactile-port", type=int, default=5101)
     parser.add_argument("--tactile-max-points", type=int, default=400)
     parser.add_argument("--tactile-timeout-ms", type=int, default=15000)
+    parser.add_argument("--paxini-left-port", default=None)
+    parser.add_argument("--paxini-right-port", default=None)
+    parser.add_argument(
+        "--paxini-model",
+        choices=tuple(PAXINI_DISTRIBUTED_LENGTHS.keys()),
+        default=PAXINI_DEFAULT_MODEL,
+    )
+    parser.add_argument("--paxini-left-module-id", default="02")
+    parser.add_argument("--paxini-right-module-id", default="03")
+    parser.add_argument("--paxini-left-device-addr", default=None)
+    parser.add_argument("--paxini-right-device-addr", default=None)
+    parser.add_argument("--paxini-baudrate", type=int, default=921600)
+    parser.add_argument("--paxini-timeout-s", type=float, default=0.1)
+    parser.add_argument("--paxini-read-timeout-s", type=float, default=0.5)
+    parser.add_argument(
+        "--paxini-probe-address",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Scan Paxini device addresses 01-08 after opening the serial port.",
+    )
+    parser.add_argument(
+        "--paxini-calibrate-on-start",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Send Paxini calibration command during warmup.",
+    )
     parser.add_argument(
         "--collect-force",
         action=argparse.BooleanOptionalAction,
@@ -537,7 +585,7 @@ def validate_requested_sensor_features(
 
     if args.collect_tactile and not store_tactile:
         raise RuntimeError(
-            "This dataset was created without Tac3D tactile features, but "
+            "This dataset was created without tactile features, but "
             "--collect-tactile is enabled. Use --overwrite, a new --root, or "
             "run with --no-collect-tactile."
         )
@@ -874,6 +922,198 @@ def format_tactile_frame(
     return formatted
 
 
+class PaxiniS2716TactileReader:
+    """Read Paxini/PX-6AX tactile data over USB serial.
+
+    This mirrors /home/zhou/vla/PX-6AX/USB_UI.py without the Tk UI. The Paxini
+    S2716_core returns 3 bytes per taxel for distributed force and 3 bytes for
+    resultant force. Values are converted with the same 0.1 N scale.
+    """
+
+    def __init__(
+        self,
+        port: str | None,
+        *,
+        model: str = PAXINI_DEFAULT_MODEL,
+        module_id: str = "02",
+        device_addr: str | None = None,
+        baudrate: int = 921600,
+        timeout_s: float = 0.1,
+        read_timeout_s: float = 0.5,
+        probe_address: bool = True,
+        calibrate_on_start: bool = False,
+        ready_delay_s: float = PAXINI_PORT_READY_DELAY,
+    ) -> None:
+        try:
+            import serial
+            import serial.tools.list_ports
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Reading Paxini tactile sensors requires pyserial. Install it with: "
+                "pip install pyserial"
+            ) from exc
+
+        self._serial_module = serial
+        self.model = model
+        self.distributed_length = int(PAXINI_DISTRIBUTED_LENGTHS[model])
+        self.resultant_length = 3
+        self.read_timeout_s = float(read_timeout_s)
+        self.device_addr = (device_addr or self._device_addr_from_module(module_id)).upper()
+        self.port = port or self._find_serial_port(serial)
+        if self.port is None:
+            raise RuntimeError(
+                "No USB serial port found for Paxini tactile sensor. Pass "
+                "--paxini-left-port /dev/ttyUSBX explicitly."
+            )
+
+        try:
+            self.ser = serial.Serial(
+                port=self.port,
+                baudrate=baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=timeout_s,
+                write_timeout=timeout_s,
+                inter_byte_timeout=0.0005,
+                xonxoff=False,
+                rtscts=False,
+            )
+        except serial.SerialException as exc:
+            raise RuntimeError(f"Failed to open Paxini serial port {self.port}: {exc}") from exc
+
+        time.sleep(float(ready_delay_s))
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
+        if probe_address:
+            self._probe_device_address()
+        if calibrate_on_start:
+            self.calibrate()
+        print(
+            "Paxini tactile serial ready: "
+            f"port={self.port}, model={self.model}, device_addr={self.device_addr}, "
+            f"distributed_length={self.distributed_length}"
+        )
+
+    @staticmethod
+    def _device_addr_from_module(module_id: str) -> str:
+        return f"{int(module_id, 16) + 1:02X}"
+
+    def _find_serial_port(self, serial_module) -> str | None:
+        for port_info in serial_module.tools.list_ports.comports():
+            port_name = port_info.device
+            description = port_info.description or ""
+            if "USB" in description or "ttyUSB" in port_name or "ttyACM" in port_name:
+                return port_name
+        return None
+
+    def _commands(self) -> dict[str, str]:
+        length_low = self.distributed_length & 0xFF
+        length_high = (self.distributed_length >> 8) & 0xFF
+        return {
+            "calibration": f"55 AA 0A 00 {self.device_addr} 00 79 03 00 00 00 01 00 01",
+            "resultant_force": f"55 AA 09 00 {self.device_addr} 00 FB F0 03 00 00 03 00",
+            "distributed_force": (
+                f"55 AA 09 00 {self.device_addr} 00 FB 0E 04 00 00 "
+                f"{length_low:02X} {length_high:02X}"
+            ),
+        }
+
+    @staticmethod
+    def _calculate_lrc(data: bytes) -> int:
+        lrc = 0
+        for byte in data:
+            lrc = (lrc + byte) & 0xFF
+        return ((~lrc) + 1) & 0xFF
+
+    def _build_frame_with_lrc(self, frame: str) -> bytes:
+        frame_bytes = bytes.fromhex(frame.replace(" ", ""))
+        lrc = self._calculate_lrc(frame_bytes)
+        return frame_bytes + bytes([lrc])
+
+    def _read_response(self, timeout: float | None = None) -> bytes | None:
+        response = b""
+        start_time = time.time()
+        timeout = self.read_timeout_s if timeout is None else float(timeout)
+        while time.time() - start_time < timeout:
+            waiting = self.ser.in_waiting
+            if waiting > 0:
+                response += self.ser.read(waiting)
+                if len(response) >= 4 and response[:2].hex() == "aa55":
+                    response_length = int.from_bytes(response[2:4], byteorder="little")
+                    expected_total = 4 + response_length + 1
+                    if len(response) >= expected_total:
+                        return response[:expected_total]
+                start_time = time.time()
+            time.sleep(0.001)
+        return response if response else None
+
+    def _send_command(self, command_type: str, timeout: float | None = None) -> bytes | None:
+        commands = self._commands()
+        if command_type not in commands:
+            raise ValueError(f"Unknown Paxini command type: {command_type}")
+        try:
+            self.ser.reset_input_buffer()
+            self.ser.write(self._build_frame_with_lrc(commands[command_type]))
+            time.sleep(0.01)
+            return self._read_response(timeout=timeout)
+        except self._serial_module.SerialException as exc:
+            raise RuntimeError(f"Paxini command {command_type} failed on {self.port}: {exc}") from exc
+
+    def _probe_device_address(self) -> None:
+        original_addr = self.device_addr
+        for device_addr in range(1, 9):
+            self.device_addr = f"{device_addr:02X}"
+            response = self._send_command("resultant_force", timeout=0.3)
+            if response and response[:2].hex() == "aa55":
+                return
+        self.device_addr = original_addr
+
+    def calibrate(self) -> None:
+        response = self._send_command("calibration", timeout=0.5)
+        if not response or response[:2].hex() != "aa55":
+            raise RuntimeError(f"Paxini calibration failed on {self.port}")
+
+    @staticmethod
+    def _parse_xyz_triplets(data: bytes) -> np.ndarray:
+        raw = np.frombuffer(data, dtype=np.uint8)
+        triplet_count = raw.size // 3
+        raw = raw[: triplet_count * 3].reshape(triplet_count, 3)
+        parsed = raw.astype(np.int16)
+        signed_xy = parsed[:, :2]
+        signed_xy[signed_xy > 127] -= 256
+        parsed[:, :2] = signed_xy
+        return parsed.astype(np.float32) * 0.1
+
+    def read(self) -> dict[str, np.ndarray | float | bool]:
+        resultant = np.zeros(3, dtype=np.float32)
+        result_response = self._send_command("resultant_force")
+        if result_response and len(result_response) >= 14 + self.resultant_length:
+            result_data = result_response[14 : 14 + self.resultant_length]
+            resultant = self._parse_xyz_triplets(result_data).reshape(-1)[:3].astype(np.float32)
+
+        distributed = np.zeros((0, 3), dtype=np.float32)
+        dist_response = self._send_command("distributed_force")
+        if dist_response and len(dist_response) >= 14:
+            dist_data = dist_response[14 : 14 + self.distributed_length]
+            distributed = self._parse_xyz_triplets(dist_data).astype(np.float32)
+
+        displacement = np.zeros_like(distributed, dtype=np.float32)
+        wrench = np.zeros(6, dtype=np.float32)
+        wrench[:3] = resultant
+        return {
+            "displacement": displacement,
+            "distributed_force": distributed,
+            "wrench": wrench,
+            "timestamp": time.time(),
+            "valid": distributed.size > 0 or bool(np.any(resultant)),
+        }
+
+    def close(self) -> None:
+        if getattr(self, "ser", None) is not None and self.ser.is_open:
+            self.ser.close()
+
+
 def skew(vec: np.ndarray) -> np.ndarray:
     x, y, z = vec
     return np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]], dtype=np.float64)
@@ -1102,7 +1342,7 @@ def main() -> None:
     force_reader = ForceReader(args, robot) if args.collect_force else None
     left_tactile = None
     right_tactile = None
-    if args.collect_tactile:
+    if args.collect_tactile and args.tactile_source == "tac3d":
         left_tactile = ZMQClientTactile(
             port=args.left_tactile_port,
             host=args.host,
@@ -1113,6 +1353,30 @@ def main() -> None:
             host=args.host,
             timeout_ms=args.tactile_timeout_ms,
         )
+    elif args.collect_tactile and args.tactile_source == "paxini":
+        left_tactile = PaxiniS2716TactileReader(
+            args.paxini_left_port,
+            model=args.paxini_model,
+            module_id=args.paxini_left_module_id,
+            device_addr=args.paxini_left_device_addr,
+            baudrate=args.paxini_baudrate,
+            timeout_s=args.paxini_timeout_s,
+            read_timeout_s=args.paxini_read_timeout_s,
+            probe_address=args.paxini_probe_address,
+            calibrate_on_start=args.paxini_calibrate_on_start,
+        )
+        if args.paxini_right_port:
+            right_tactile = PaxiniS2716TactileReader(
+                args.paxini_right_port,
+                model=args.paxini_model,
+                module_id=args.paxini_right_module_id,
+                device_addr=args.paxini_right_device_addr,
+                baudrate=args.paxini_baudrate,
+                timeout_s=args.paxini_timeout_s,
+                read_timeout_s=args.paxini_read_timeout_s,
+                probe_address=args.paxini_probe_address,
+                calibrate_on_start=args.paxini_calibrate_on_start,
+            )
 
     try:
         robot_dofs = robot.num_dofs()
@@ -1120,9 +1384,13 @@ def main() -> None:
             raise RuntimeError(f"Expected UR5 + RG2 robot with 7 DoF, got {robot_dofs}.")
         base_camera.read((args.image_size, args.image_size))
         wrist_camera.read((args.image_size, args.image_size))
-        if left_tactile is not None and right_tactile is not None:
+        if args.tactile_source == "tac3d" and left_tactile is not None and right_tactile is not None:
             format_tactile_frame(left_tactile.read(), args.tactile_max_points)
             format_tactile_frame(right_tactile.read(), args.tactile_max_points)
+        elif args.tactile_source == "paxini" and left_tactile is not None:
+            format_tactile_frame(left_tactile.read(), args.tactile_max_points)
+            if right_tactile is not None:
+                format_tactile_frame(right_tactile.read(), args.tactile_max_points)
         if force_reader is not None:
             force_reader.read()
     except RuntimeError as exc:
@@ -1138,7 +1406,8 @@ def main() -> None:
             "--camera-width 424 --camera-height 240 --camera-fps 15\n"
             "If the servers are already running, check the camera serial numbers "
             "and RealSense USB/frame status. If tactile collection is enabled, "
-            "also check the Tac3D SDK path, sensor IDs, and tactile ZMQ ports. "
+            "also check --tactile-source, Tac3D SDK/ZMQ ports, or Paxini serial "
+            "ports/device addresses. "
             "If force collection is enabled with --force-source modbus-serial, "
             "check the FTS-300-S USB serial port, slave address, register address, "
             "baudrate, and minimalmodbus/pyserial installation. If --force-source "
@@ -1350,7 +1619,7 @@ def main() -> None:
             base_image = resize_rgb(base_image, args.image_size)
             wrist_image = resize_rgb(wrist_image, args.image_size)
 
-            if not store_tactile or left_tactile is None or right_tactile is None:
+            if not store_tactile or left_tactile is None:
                 left_tactile_frame = empty_tactile_frame(args.tactile_max_points)
                 right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
             else:
@@ -1359,10 +1628,13 @@ def main() -> None:
                         left_tactile.read(),
                         args.tactile_max_points,
                     )
-                    right_tactile_frame = format_tactile_frame(
-                        right_tactile.read(),
-                        args.tactile_max_points,
-                    )
+                    if right_tactile is None:
+                        right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+                    else:
+                        right_tactile_frame = format_tactile_frame(
+                            right_tactile.read(),
+                            args.tactile_max_points,
+                        )
                 except RuntimeError as exc:
                     print(f"Tactile frame skipped: {exc}")
                     continue
