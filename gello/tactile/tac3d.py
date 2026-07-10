@@ -10,7 +10,7 @@ import numpy as np
 
 
 DEFAULT_TAC3D_SDK_PATH = (
-    "/home/mel/ybzhou/lerobot-mujoco-tutorial/local_tac3d_core/"
+    "/home/lab202/YBZHOU/lerobot-mujoco-vla/local_tac3d_core/"
     "Tac3D-API/python/PyTac3D"
 )
 TAC3D_SDK_RELATIVE_PATH = (

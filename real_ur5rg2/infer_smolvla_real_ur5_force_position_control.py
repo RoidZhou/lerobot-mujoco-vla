@@ -232,7 +232,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-position-mixing",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Use the force expert's predicted next force to add a small Cartesian position correction.",
     )
     parser.add_argument(
@@ -250,7 +250,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-position-direction-sign",
         type=float,
-        default=-1.0,
+        default=1.0,
         help="TCP direction for increasing contact force. -1 moves toward negative base axis.",
     )
     parser.add_argument(
@@ -292,7 +292,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-position-k-m-per-n",
         type=float,
-        default=2.0e-4,
+        default=1.0e-3,
         help="Position correction gain in meters per Newton of force error.",
     )
     parser.add_argument(
@@ -1044,6 +1044,7 @@ class ForcePositionMixer:
         self.max_up_step = abs(float(args.force_position_max_up_step_m))
         self.lowpass_alpha = float(np.clip(args.force_position_lowpass_alpha, 0.0, 1.0))
         self.filtered_target = None
+        self.contact_latched = False
 
     def _target_force_magnitude(self, predicted_force: np.ndarray | None) -> float | None:
         if predicted_force is None:
@@ -1079,13 +1080,14 @@ class ForcePositionMixer:
         measured = format_force_torque(measured_force)
         measured_axis = self.axis_sign * float(measured[self.axis_index])
         measured_mag = abs(measured_axis)
-        in_contact = measured_mag >= self.contact_threshold
+        if not self.contact_latched and measured_mag >= self.contact_threshold:
+            self.contact_latched = True
         info = {
-            "target_n": 0.0 if target_force is None else target_force,
-            "measured_n": measured_mag,
+            "target_n": 0.0 if target_force is None else float(target_force),
+            "measured_n": float(measured_mag),
             "step_m": 0.0,
         }
-        if target_force is None or (self.require_contact and not in_contact):
+        if target_force is None or (self.require_contact and not self.contact_latched):
             return action, False, info
 
         force_error = target_force - measured_mag
@@ -1096,7 +1098,7 @@ class ForcePositionMixer:
         ))
         if abs(step_toward_contact) < 1e-7:
             return action, False, info
-
+        print(f"step_toward_contact : {step_toward_contact}, {force_error}")
         corrected_tcp = np.asarray(current_tcp, dtype=np.float64).copy()
         corrected_tcp[self.axis_index] += self.direction_sign * step_toward_contact
         corrected_action = np.asarray(action, dtype=np.float32).copy()
@@ -1280,6 +1282,7 @@ def main() -> None:
             mixing_active = False
             mixing_info = {"target_n": 0.0, "measured_n": 0.0, "step_m": 0.0}
             predicted_force = infer.last_predicted_force
+            print((f"predicted_force: {predicted_force}"))
             if force_position_mixer is not None:
                 action, mixing_active, mixing_info = force_position_mixer.apply(
                     action,
@@ -1321,7 +1324,7 @@ def main() -> None:
                 elapsed = time.time() - loop_start
                 print(
                     f"step={step:05d} elapsed={elapsed:.3f}s "
-                    # f"q_cmd={np.array2string(action[:6], precision=4)} "
+                    f"q_cmd={np.array2string(action[:6], precision=4)} "
                     f"gripper={action[6]:.3f} "
                     f"force_torque={np.array2string(force_torque, precision=3)} "
                     f"pred_force={np.array2string(predicted_force, precision=3) if predicted_force is not None else 'none'} "

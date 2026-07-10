@@ -277,9 +277,15 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
 # smolvla
 ## boltnut
 '''
+1. checkpoints_smolvla_wo_force_vqvae_boltnut_speedup_total200_4w         035000   /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae/latest.pt
+2. checkpoints_pi0_force_vqvae_boltnut_speedup_total200_7_6_shareatten    035000   /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae_200/latest.pt
+3. checkpoints_smolvla_wo_force_vqvae_boltnut_speedup_200_T-Rex_atten     030000   /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae_200/latest.pt
+4. checkpoints_smolvla_force_position_wo_vq_wo_trex_w_forcepred_wfp02_v2  030000   
 
-/tmp/force_vqvae_200/force_vqvae_20260705_082414/latest.pt
+
+4 效果最好
 '''
+
 python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --device cuda:1 \
   --task "Insert the bolt into the nut." \
@@ -292,6 +298,26 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --force-safety-threshold-n 10,10,20 \
   --effort-key observation.force_torque \
   --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae/latest.pt
+
+python real_ur5rg2/infer_smolvla_real_ur5_force_position_control.py \
+  --device cuda:1 \
+  --task "Insert the bolt into the nut." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_200 \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_force_position_wo_vq_wo_trex_w_forcepred_wfp02_v3/025000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae_200/latest.pt \
+  --no-force-position-require-contact \
+  --force-position-contact-threshold-n 0.3 \
+  --force-position-k-m-per-n 3e-3 \
+  --force-position-max-down-step-m 0.0008 \
+  --force-position-max-up-step-m 0.0002 \
+  --force-position-direction-sign -1
 
 ## push button
 '''
