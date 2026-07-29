@@ -319,6 +319,19 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_position_control.py \
   --force-position-max-up-step-m 0.0002 \
   --force-position-direction-sign -1
 
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert the bolt into the nut." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_boltnut_speedup_200 \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_force_position_wo_vq_wo_trex_w_forcepred_wfp02_v3/025000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque 
+
 ## push button
 '''
 1. checkpoints_smolvla_wo_force_vqvae_pushbutton_100_T-Rex_atten2  025000 

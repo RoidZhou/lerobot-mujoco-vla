@@ -314,6 +314,15 @@ def parse_args() -> argparse.Namespace:
         help="Low-pass alpha for predicted target force magnitude.",
     )
     parser.add_argument(
+        "--force-position-use-target-force-magnitude",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Blend/clip/low-pass the predicted force with _target_force_magnitude before "
+            "force-position mixing. Disable to use the raw selected-axis predicted magnitude."
+        ),
+    )
+    parser.add_argument(
         "--hybrid-control",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -396,6 +405,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hybrid-max-joint-vel", type=float, default=0.35)
     parser.add_argument("--hybrid-integral-limit", type=float, default=4.0)
     parser.add_argument("--hybrid-lowpass-alpha", type=float, default=0.35)
+    parser.add_argument(
+        "--hybrid-use-target-force-magnitude",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Blend/clip the predicted force with _target_force_magnitude before hybrid force "
+            "control. Disable to use the raw selected-axis predicted magnitude."
+        ),
+    )
+    parser.add_argument(
+        "--tensorboard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Log measured and predicted force/torque to TensorBoard.",
+    )
+    parser.add_argument(
+        "--tensorboard-log-dir",
+        default="runs/real_ur5_hybrid_force",
+        help="TensorBoard log root. A timestamped run directory is created under this path.",
+    )
+    parser.add_argument(
+        "--tensorboard-log-every",
+        type=int,
+        default=1,
+        help="Write force TensorBoard scalars every N inference steps.",
+    )
+    parser.add_argument(
+        "--tensorboard-flush-every",
+        type=int,
+        default=20,
+        help="Flush TensorBoard events every N logged steps.",
+    )
     return parser.parse_args()
 
 
@@ -1126,7 +1167,18 @@ class ForcePositionMixer:
         self.max_down_step = abs(float(args.force_position_max_down_step_m))
         self.max_up_step = abs(float(args.force_position_max_up_step_m))
         self.lowpass_alpha = float(np.clip(args.force_position_lowpass_alpha, 0.0, 1.0))
+        self.use_target_force_magnitude = bool(args.force_position_use_target_force_magnitude)
         self.filtered_target = None
+
+    def _raw_target_force_magnitude(self, predicted_force: np.ndarray | None) -> float | None:
+        if predicted_force is None:
+            if self.manual_target <= 0.0:
+                return None
+            return self.manual_target
+
+        predicted = format_force_torque(predicted_force)
+        predicted_axis = self.axis_sign * float(predicted[self.axis_index])
+        return abs(predicted_axis)
 
     def _target_force_magnitude(self, predicted_force: np.ndarray | None) -> float | None:
         if predicted_force is None:
@@ -1158,15 +1210,17 @@ class ForcePositionMixer:
         robot,
         args: argparse.Namespace,
     ) -> tuple[np.ndarray, bool, dict[str, float]]:
-        target_force = self._target_force_magnitude(predicted_force)
-        target_force = predicted_force
+        if self.use_target_force_magnitude:
+            target_force = self._target_force_magnitude(predicted_force)
+        else:
+            target_force = self._raw_target_force_magnitude(predicted_force)
         measured = format_force_torque(measured_force)
         measured_axis = self.axis_sign * float(measured[self.axis_index])
         measured_mag = abs(measured_axis)
         in_contact = measured_mag >= self.contact_threshold
         info = {
-            "target_n": 0.0 if target_force is None else target_force,
-            "measured_n": measured_mag,
+            "target_n": 0.0 if target_force is None else float(target_force),
+            "measured_n": float(measured_mag),
             "step_m": 0.0,
         }
         if target_force is None or (self.require_contact and not in_contact):
@@ -1239,6 +1293,7 @@ class HybridForceVelocityController:
         self.max_joint_vel = abs(float(args.hybrid_max_joint_vel))
         self.integral_limit = abs(float(args.hybrid_integral_limit))
         self.lowpass_alpha = float(np.clip(args.hybrid_lowpass_alpha, 0.0, 1.0))
+        self.use_target_force_magnitude = bool(args.hybrid_use_target_force_magnitude)
         self.force_integral = 0.0
         self.torque_integral = 0.0
         self.filtered_twist = np.zeros(6, dtype=np.float64)
@@ -1267,6 +1322,11 @@ class HybridForceVelocityController:
             force = rotation @ force
             torque = rotation @ torque
         return np.concatenate([force, torque])
+
+    def _raw_target_force_magnitude(self, predicted_wrench: np.ndarray | None) -> float:
+        if predicted_wrench is None:
+            return self.manual_force_target
+        return abs(float(predicted_wrench[self.force_axis_index]))
 
     def _target_force_magnitude(self, predicted_wrench: np.ndarray | None) -> float:
         if predicted_wrench is None:
@@ -1322,7 +1382,10 @@ class HybridForceVelocityController:
         measured_force_mag = abs(measured_force_axis)
         in_contact = measured_force_mag >= self.contact_threshold
 
-        target_force_mag = self._target_force_magnitude(predicted_wrench)
+        if self.use_target_force_magnitude:
+            target_force_mag = self._target_force_magnitude(predicted_wrench)
+        else:
+            target_force_mag = self._raw_target_force_magnitude(predicted_wrench)
         force_error = target_force_mag - measured_force_mag
         force_active = (not self.require_contact or in_contact) and target_force_mag > 0.0
         if force_active:
@@ -1442,6 +1505,102 @@ def apply_force_safety_to_action(
     return corrected_action.astype(np.float32), hard_stop, correction, signed_wrench
 
 
+class ForceTensorBoardLogger:
+    COMPONENTS = ("Fx", "Fy", "Fz", "Tx", "Ty", "Tz")
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.enabled = bool(args.tensorboard)
+        self.writer = None
+        self.log_every = max(1, int(args.tensorboard_log_every))
+        self.flush_every = max(1, int(args.tensorboard_flush_every))
+        self._logged_steps = 0
+        self.log_dir = None
+        if not self.enabled:
+            return
+
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except (ImportError, ModuleNotFoundError) as exc:
+            print(f"TensorBoard disabled: {exc}")
+            self.enabled = False
+            return
+
+        run_name = time.strftime("%Y%m%d-%H%M%S")
+        self.log_dir = Path(args.tensorboard_log_dir).expanduser() / run_name
+        self.writer = SummaryWriter(log_dir=str(self.log_dir))
+        print(f"TensorBoard force logging enabled: {self.log_dir}")
+
+    @staticmethod
+    def _norms(wrench: np.ndarray) -> tuple[float, float]:
+        wrench = format_force_torque(wrench).astype(np.float64)
+        return float(np.linalg.norm(wrench[:3])), float(np.linalg.norm(wrench[3:6]))
+
+    def log(
+        self,
+        step: int,
+        measured_force: np.ndarray,
+        predicted_force: np.ndarray | None,
+        hybrid_info: dict[str, float | np.ndarray] | None = None,
+    ) -> None:
+        if not self.enabled or self.writer is None or step % self.log_every != 0:
+            return
+
+        measured = format_force_torque(measured_force)
+        predicted = None if predicted_force is None else format_force_torque(predicted_force)
+        for idx, name in enumerate(self.COMPONENTS):
+            self.writer.add_scalar(f"force/measured/{name}", float(measured[idx]), step)
+            if predicted is not None:
+                self.writer.add_scalar(f"force/predicted/{name}", float(predicted[idx]), step)
+                self.writer.add_scalars(
+                    f"force_compare/{name}",
+                    {
+                        "measured": float(measured[idx]),
+                        "predicted": float(predicted[idx]),
+                    },
+                    step,
+                )
+
+        measured_force_norm, measured_torque_norm = self._norms(measured)
+        self.writer.add_scalar("force/measured/force_norm", measured_force_norm, step)
+        self.writer.add_scalar("force/measured/torque_norm", measured_torque_norm, step)
+        self.writer.add_scalar("force/predicted_available", float(predicted is not None), step)
+        if predicted is not None:
+            predicted_force_norm, predicted_torque_norm = self._norms(predicted)
+            self.writer.add_scalar("force/predicted/force_norm", predicted_force_norm, step)
+            self.writer.add_scalar("force/predicted/torque_norm", predicted_torque_norm, step)
+            self.writer.add_scalars(
+                "force_compare/force_norm",
+                {"measured": measured_force_norm, "predicted": predicted_force_norm},
+                step,
+            )
+            self.writer.add_scalars(
+                "force_compare/torque_norm",
+                {"measured": measured_torque_norm, "predicted": predicted_torque_norm},
+                step,
+            )
+
+        if hybrid_info is not None:
+            for key in (
+                "target_force_n",
+                "measured_force_n",
+                "force_error_n",
+                "target_torque_nm",
+                "measured_torque_nm",
+                "torque_error_nm",
+            ):
+                if key in hybrid_info:
+                    self.writer.add_scalar(f"hybrid/{key}", float(hybrid_info[key]), step)
+
+        self._logged_steps += 1
+        if self._logged_steps % self.flush_every == 0:
+            self.writer.flush()
+
+    def close(self) -> None:
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+
+
 def main() -> None:
     from gello.zmq_core.camera_node import ZMQClientCamera
     from gello.zmq_core.robot_node import ZMQClientRobot
@@ -1450,6 +1609,7 @@ def main() -> None:
     args = parse_args()
     args.dry_run = args.dry_run or args.no_command
     infer = RealUR5VLAInfer(args)
+    tb_logger = ForceTensorBoardLogger(args)
 
     robot = ZMQClientRobot(port=args.robot_port, host=args.host, timeout_ms=args.robot_timeout_ms)
     base_camera = ZMQClientCamera(
@@ -1520,6 +1680,7 @@ def main() -> None:
                 f"manual_force={args.hybrid_manual_target_force_n:.3f} N, "
                 f"manual_torque={args.hybrid_manual_target_torque_nm:.3f} Nm, "
                 f"pred_blend=({args.hybrid_pred_force_blend:.2f}, {args.hybrid_pred_torque_blend:.2f}), "
+                f"use_target_force_magnitude={args.hybrid_use_target_force_magnitude}, "
                 f"max_twist=({args.hybrid_max_linear_vel:.4f} m/s, "
                 f"{args.hybrid_max_angular_vel:.4f} rad/s)"
             )
@@ -1531,6 +1692,7 @@ def main() -> None:
                 f"require_contact={args.force_position_require_contact}, "
                 f"contact_threshold={args.force_position_contact_threshold_n:.3f} N, "
                 f"pred_blend={args.force_position_pred_blend:.2f}, "
+                f"use_target_force_magnitude={args.force_position_use_target_force_magnitude}, "
                 f"target_clip=[{args.force_position_min_target_n:.3f}, "
                 f"{args.force_position_max_target_n:.3f}] N"
             )
@@ -1637,6 +1799,7 @@ def main() -> None:
                         f"pos_corr_m={np.array2string(safety_correction[:3], precision=5)} "
                         f"rot_corr_rad={np.array2string(safety_correction[3:], precision=5)}"
                     )
+            tb_logger.log(step, force_torque, predicted_force, hybrid_info)
             previous_action = action.copy()
 
             if not args.dry_run:
@@ -1667,6 +1830,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
+        tb_logger.close()
         preview.close()
         if force_reader is not None:
             force_reader.close()
