@@ -10,6 +10,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gello.robots.robot import BimanualRobot, PrintRobot
+from gello.tactile.paxini import (
+    AsyncTactileReader,
+    EmptyTactileReader,
+    PAXINI_DEFAULT_MODEL,
+    PAXINI_DISTRIBUTED_LENGTHS,
+    PaxiniS2716TactileReader,
+)
 from gello.tactile.tac3d import DEFAULT_TAC3D_SDK_PATH, Tac3DDriver, Tac3DFrameCache
 from gello.zmq_core.camera_node import ZMQServerCamera
 from gello.zmq_core.robot_node import ZMQServerRobot
@@ -38,6 +45,7 @@ class Args:
     enable_depth: bool = False
     camera_backend: str = "lerobot"
     enable_tactile: bool = True
+    tactile_source: str = "tac3d"
     left_tactile_port: int = 5100
     right_tactile_port: int = 5101
     left_tactile_device_id: str = "0"
@@ -48,6 +56,20 @@ class Args:
     tac3d_max_queue_size: int = 5
     tactile_max_points: int = 400
     tactile_read_timeout_s: float = 10.0
+    paxini_left_port: str | None = None
+    paxini_right_port: str | None = None
+    paxini_model: str = PAXINI_DEFAULT_MODEL
+    paxini_left_module_id: str = "02"
+    paxini_right_module_id: str = "03"
+    paxini_left_device_addr: str | None = None
+    paxini_right_device_addr: str | None = None
+    paxini_baudrate: int = 921600
+    paxini_timeout_s: float = 0.1
+    paxini_read_timeout_s: float = 0.05
+    paxini_probe_address: bool = True
+    paxini_calibrate_on_start: bool = False
+    paxini_poll_interval_s: float = 0.0
+    paxini_warmup_timeout_s: float = 0.5
 
 
 def make_robot(args: Args):
@@ -131,7 +153,38 @@ def launch_robot_server(args: Args) -> None:
             read_timeout_s=args.tactile_read_timeout_s,
         )
 
-    if args.enable_tactile:
+    def make_paxini(
+        port: str | None,
+        *,
+        module_id: str,
+        device_addr: str | None,
+        name: str,
+    ) -> AsyncTactileReader:
+        reader = PaxiniS2716TactileReader(
+            port,
+            model=args.paxini_model,
+            module_id=module_id,
+            device_addr=device_addr,
+            baudrate=args.paxini_baudrate,
+            timeout_s=args.paxini_timeout_s,
+            read_timeout_s=args.paxini_read_timeout_s,
+            probe_address=args.paxini_probe_address,
+            calibrate_on_start=args.paxini_calibrate_on_start,
+        )
+        async_reader = AsyncTactileReader(
+            reader,
+            max_points=args.tactile_max_points,
+            poll_interval_s=args.paxini_poll_interval_s,
+            name=name,
+        )
+        if not async_reader.wait_for_frame(args.paxini_warmup_timeout_s):
+            print(
+                f"Warning: no {name} frame arrived during async warmup; "
+                "ZMQ server will return zero tactile frames until data arrives."
+            )
+        return async_reader
+
+    if args.enable_tactile and args.tactile_source == "tac3d":
         tactile_cache = Tac3DFrameCache(
             sdk_path=args.tactile_sdk_path,
             module_name=args.tactile_module_name,
@@ -157,6 +210,44 @@ def launch_robot_server(args: Args) -> None:
         )
         print(f"Starting right Tac3D tactile server on port {args.right_tactile_port}")
         threads.append(threading.Thread(target=right_tactile_server.serve, daemon=True))
+    elif args.enable_tactile and args.tactile_source == "paxini":
+        if args.paxini_model not in PAXINI_DISTRIBUTED_LENGTHS:
+            valid_models = ", ".join(PAXINI_DISTRIBUTED_LENGTHS)
+            raise ValueError(f"Unsupported Paxini model {args.paxini_model!r}. Choose: {valid_models}")
+
+        left_tactile = make_paxini(
+            args.paxini_left_port,
+            module_id=args.paxini_left_module_id,
+            device_addr=args.paxini_left_device_addr,
+            name="left Paxini tactile",
+        )
+        left_tactile_server = ZMQServerTactile(
+            tactile=left_tactile,
+            port=args.left_tactile_port,
+            host=args.hostname,
+        )
+        print(f"Starting left Paxini tactile ZMQ server on port {args.left_tactile_port}")
+        threads.append(threading.Thread(target=left_tactile_server.serve, daemon=True))
+
+        if args.paxini_right_port:
+            right_tactile = make_paxini(
+                args.paxini_right_port,
+                module_id=args.paxini_right_module_id,
+                device_addr=args.paxini_right_device_addr,
+                name="right Paxini tactile",
+            )
+        else:
+            right_tactile = EmptyTactileReader(max_points=args.tactile_max_points)
+            print("No right Paxini port configured; right tactile ZMQ server returns zero frames.")
+        right_tactile_server = ZMQServerTactile(
+            tactile=right_tactile,
+            port=args.right_tactile_port,
+            host=args.hostname,
+        )
+        print(f"Starting right Paxini tactile ZMQ server on port {args.right_tactile_port}")
+        threads.append(threading.Thread(target=right_tactile_server.serve, daemon=True))
+    elif args.enable_tactile:
+        raise ValueError("--tactile-source must be 'tac3d' or 'paxini'")
 
     for thread in threads:
         thread.start()

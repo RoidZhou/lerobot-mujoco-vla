@@ -60,7 +60,7 @@ python real_ur5rg2/experiments/launch_nodes.py \
   --left-tactile-device-id DL1-GWM0013 \
   --right-tactile-device-id DL1-GWM0018
 
-python real_ur5rg2/collect_lerobot_smolvla_real.py \
+python real_ur5rg2/collect_lerobot_smolvla_real_tactile.py \
   --task "Insert the bolt into the nut." \
   --num-episodes 20 \
   --no-preview \
@@ -108,7 +108,7 @@ The tactile server waits up to 10 seconds for a matching Tac3D frame by default.
 python real_ur5rg2/experiments/launch_nodes.py --robot ur \
   --tactile-read-timeout-s 30
 
-python real_ur5rg2/collect_lerobot_smolvla_real.py \
+python real_ur5rg2/collect_lerobot_smolvla_real_tactile.py \
   --task "Insert the bolt into the nut." \
   --num-episodes 20 \
   --no-preview \
@@ -145,20 +145,60 @@ If OpenCV was installed without GUI support, disable the camera preview:
 python real_ur5rg2/collect_lerobot_smolvla_real.py --task "Insert the bolt into the nut." --num-episodes 20 --no-preview
 ```
 
-Tac3D remains the default tactile backend. To collect Paxini S2716_core tactile
-data instead, switch `--tactile-source` and pass the USB serial port. One Paxini
-sensor is stored as the left tactile stream and the right stream is zero-filled;
-pass `--paxini-right-port` as well if you use two Paxini sensors.
+Tac3D remains the default tactile backend. Paxini S2716_core is served through
+the same tactile ZMQ ports: start `launch_nodes.py` with `--tactile-source
+paxini`, then run collection against the ZMQ endpoints. One Paxini sensor is
+stored as the left tactile stream and the right stream is zero-filled; pass
+`--paxini-right-port` to `launch_nodes.py` as well if you use two Paxini sensors.
 
 ```bash
-python real_ur5rg2/collect_lerobot_smolvla_real.py \
-  --task "Insert the bolt into the nut." \
+without force
+python real_ur5rg2/experiments/launch_nodes.py \
+  --robot ur \
+  --camera-width 424 \
+  --camera-height 240 \
+  --camera-fps 15 \
+  --tactile-source paxini \
+  --paxini-left-port /dev/ttyACM0 \
+  --paxini-right-port /dev/ttyACM1 \
+  --tactile-max-points 400
+
+python real_ur5rg2/collect_lerobot_smolvla_real_tactile.py \
+  --task "Insert the nut into the bolt." \
   --num-episodes 20 \
   --no-preview \
   --collect-tactile \
   --tactile-source paxini \
-  --paxini-left-port /dev/ttyUSB0 \
   --tactile-max-points 400
+
+with force
+python real_ur5rg2/experiments/launch_nodes.py \
+  --robot ur \
+  --camera-width 424 \
+  --camera-height 240 \
+  --camera-fps 15 \
+  --tactile-source paxini \
+  --paxini-left-port /dev/ttyACM0 \
+  --paxini-right-port /dev/ttyACM1 \
+  --tactile-max-points 400
+
+python real_ur5rg2/collect_lerobot_smolvla_real_tactile_w_force.py \
+  --task "Insert the nut into the bolt." \
+  --num-episodes 20 \
+  --no-preview \
+  --no-force-safety \
+  --collect-tactile \
+  --tactile-source paxini \
+  --tactile-max-points 400 \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
+
+
+
+TCP position [x,y,z]=[ 0.0378, -0.5468,  0.0878]
+
+python real_ur5rg2/collect_lerobot_smolvla_real_tactile.py   --task "Insert the bolt into the nut."   --num-episodes 20   --no-preview   --no-collect-tactile   --force-serial-port /dev/ttyUSB0   --tactile-max-points 400
 ```
 
 To reduce excessive x/y/z contact force and torque during bolt/nut collection, enable the
@@ -330,13 +370,17 @@ python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
   --force-serial-retries 5 \
   --force-safety-threshold-n 10,10,20 \
   --no-force-safety \
-  --effort-key observation.force_torque 
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20
 
 ## push button
 '''
 1. checkpoints_smolvla_wo_force_vqvae_pushbutton_100_T-Rex_atten2  025000 
 2. checkpoints_smolvla_wo_force_vqvae_pushbutton_100_T-Rex_atten   035000 
 3. checkpoints_smolvla_wo_force_vqvae_pushbutton_100_atten         020000
+4. checkpoints_smolvla_hybrid_force_position_FR-VLA_pushbutton     020000
 
 1 和 2 区别不大， 2 更稳一点， 都优于3，
 '''
@@ -353,6 +397,53 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --effort-key observation.force_torque \
   --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae_pb_100/latest.pt
 
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "push-in socket button." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_pushbutton \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_pushbutton/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_pushbutton \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-kp-force-vel 0.08 \
+  --hybrid-max-linear-vel 0.05 \
+  --max-joint-delta 0.1 \
+  --hybrid-max-joint-vel 1.0
+
+'''
+这个版本的参数效果最好
+'''
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "push-in socket button." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_pushbutton \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_pushbutton/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_pushbutton \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-control \
+  --hybrid-force-axis z \
+  --hybrid-torque-axis none \
+  --hybrid-pred-force-blend 0.0 \
+  --hybrid-kp-force-vel 3 \
+  --hybrid-max-linear-vel 0.12 \
+  --hybrid-position-vel-gain 1.0 \
+  --hybrid-max-joint-vel 1.0 \
+
 # pi0
 python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --device cuda:1 \
@@ -367,3 +458,241 @@ python real_ur5rg2/infer_smolvla_real_ur5_force_control.py \
   --effort-key observation.force_torque \
   --force-vqvae-ckpt /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/force_vqvae_200/checkpoint_epoch002.pt
 ```
+
+## wipe board
+```bash
+smolvla
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "wipe the board." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_wipeboard_0721 \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_wipeboard/035000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_wipeboard \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 
+
+'''
+
+## assemble gear
+'''
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Assemble the two gears." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_gear \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_assemblegear/025000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_assemblegear \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 
+
+'''
+
+
+## key turning
+'''
+smolvla
+这一版本效果最好 2026.7.31
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_keyturning_cs50/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-kp-force-vel 0.001 \
+  --hybrid-max-linear-vel 0.002 
+
+这一版本效果最好 2026.8.1:10.45
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_keyturning_cs50_as5_frl.03/050000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-kp-force-vel 0.01 \
+  --hybrid-max-linear-vel 0.02 
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_keyturning_cs80_as10_frl.01/025000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-kp-force-vel 0.01 \
+  --hybrid-max-linear-vel 0.02 
+
+smolvla compare without force
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_keyturning/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 
+
+smolvla compare 
+
+python real_ur5rg2/infer_smolvla_real_ur5.py \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_keyturning_cs50/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
+
+pi0 with hybrid force-position
+'''
+checkpoints_pi0_hybrid_force_position_FR-VLA_keyturning_7.29   015000
+checkpoints_pi0_hybrid_force_position_FR-VLA_keyturning        020000
+checkpoints_pi0_hybrid_force_position_FR-VLA_keyturning_frl.02 025000
+'''
+python real_ur5rg2/infer_pi0_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_hybrid_force_position_FR-VLA_keyturning/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --hybrid-kp-force-vel 0.0015 \
+  --hybrid-max-linear-vel 0.003 
+
+pi0 without hybrid force-position
+
+python real_ur5rg2/infer_pi0_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_hybrid_force_position_FR-VLA_keyturning_7.29/015000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_keyturning \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20 \
+  --no-hybrid-control \
+  --no-force-position-mixing
+
+pi0 compare 
+
+python real_ur5rg2/infer_pi0_real_ur5.py \
+  --task "Insert and turn the key to unlock." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_keyturning \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_keyturning/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
+
+'''
+
+## plug in socket
+'''
+
+python real_ur5rg2/infer_smolvla_real_ur5_hybrid_control.py \
+  --device cuda:1 \
+  --task "Plug in the socket." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_plug \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_smolvla_hybrid_force_position_FR-VLA_pluginsocket/025000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_pluginsocket \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20
+
+
+pi0 without force
+
+python real_ur5rg2/infer_pi0_real_ur5.py \
+  --task "Plug in the socket." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_plug \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_pluginsocket/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5
+
+  python real_ur5rg2/infer_pi0_real_ur5_hybrid_control.py \
+  --task "Plug in the socket." \
+  --root /home/lab202/YBZHOU/lerobot-mujoco-vla/real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_force_plug \
+  --policy-path /home/lab202/YBZHOU/lerobot-mujoco-vla/ckpt/checkpoints_pi0_pluginsocket/020000/pretrained_model \
+  --collect-force \
+  --force-serial-port /dev/ttyUSB0 \
+  --force-serial-timeout-s 0.1 \
+  --force-serial-retries 5 \
+  --force-safety-threshold-n 10,10,20 \
+  --no-force-safety \
+  --effort-key observation.force_torque \
+  --tensorboard-log-dir runs/real_ur5_hybrid_force_pluginsocket \
+  --tensorboard-log-every 1 \
+  --tensorboard-flush-every 20
+'''

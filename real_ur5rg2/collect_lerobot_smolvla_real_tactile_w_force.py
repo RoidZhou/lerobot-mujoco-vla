@@ -1,6 +1,7 @@
 import argparse
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -33,38 +34,37 @@ TACTILE_DATASET_KEYS = TACTILE_FIELD_KEYS + (
     "observation.tactile_right.wrench",
     "observation.tactile.timestamp",
 )
+PAXINI_DISTRIBUTED_LENGTHS = {
+    "S1813_elite": 93,
+    "S2015_elite": 156,
+    "S1813_core": 153,
+    "S2716_core": 348,
+    "S3013_core": 288,
+    "M2826_omega": 381,
+    "L3530_omega": 405,
+    "S1610_elite": 75,
+    "M2324_core": 204,
+    "M3025_core": 231,
+    "L5325_omega": 717,
+    "M2020_elite": 27,
+}
+PAXINI_DEFAULT_MODEL = "S2716_core"
+PAXINI_PORT_READY_DELAY = 2.5
+TACTILE_FORCE_SAFETY_LIMIT_N = np.asarray([10.0, 10.0, 25.0], dtype=np.float32)
+TACTILE_TORQUE_SAFETY_LIMIT_NM = np.asarray([1.0, 1.0, 1.0], dtype=np.float32)
 FORCE_TORQUE_KEY = "observation.force_torque"
 FORCE_TARE_SECONDS = 2.0
 DEFAULT_FORCE_SAFETY_THRESHOLD_N = 5.0
 DEFAULT_FORCE_SAFETY_HARD_STOP_N = 18.0
 DEFAULT_TORQUE_SAFETY_THRESHOLD_NM = 0.5
-DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 3
+DEFAULT_TORQUE_SAFETY_HARD_STOP_NM = 1.5
 DEFAULT_FORCE_TORQUE_TOOL_OFFSET_M = 0.042 - 0.0034
-# 黑板
-# FIXED_RESET_JOINTS = np.asarray(
-#     [2.4779, -1.1235, 1.0974, -1.5492, -1.5865, -2.2176],
-#     dtype=np.float64,
-# )
-
-# 齿轮
-# FIXED_RESET_JOINTS = np.asarray(
-#     [1.319469,-1.018923,0.827286,-1.373051,-1.586330,-1.719673],
-#     dtype=np.float64,
-# )
-
-# 钥匙
-FIXED_RESET_JOINTS = np.asarray(
-    [1.559103,-1.051037,1.0184,-1.530654,-1.571145,-1.582665],
-    dtype=np.float64,
-)
-
-
-RESET_TCP_POSITION = np.asarray([-0.040076405, -0.5464264, 0.21074047], dtype=np.float64)
-RESET_TCP_POSITION_RANDOM_RANGE_M = 0.1
-# The bolt/tool axis on this TCP points along local -Z, so identity makes it
-# point vertically down in the base frame.
+RESET_TCP_POSITION = np.asarray([ 0.107776706, -0.696389763,  0.199836926], dtype=np.float64)
+RESET_ORIENTATION_TCP_XY = np.asarray([0.0378, -0.5468], dtype=np.float64)
+RESET_TCP_POSITION_RANDOM_RANGE_M = 0.05
+# Initial reset posture [pi, 0, 0], then rotate +180 deg around base Z.
 RESET_TCP_ROTATION_VECTOR = np.asarray(
-    [-np.pi, 0.0, 0.0],
+    [0.0, np.pi, 0.0],
     dtype=np.float64,
 )
 
@@ -147,8 +147,8 @@ def parse_args() -> argparse.Namespace:
         description="Collect LeRobot/SmolVLA episodes on a real UR5 + RG2 with keyboard teleop."
     )
     parser.add_argument("--repo-id", default="ur5_rg2_real_smolvla")
-    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_tactile")
-    parser.add_argument("--task", default="Insert and turn the key to unlock.")
+    parser.add_argument("--root", default="./real_ur5rg2/data/ur5_rg2_real_smolvla_dataset_tactile_boltnut_demo")
+    parser.add_argument("--task", default="Insert the bolt into the nut.")
     parser.add_argument("--num-episodes", type=int, default=20)
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--host", default="127.0.0.1")
@@ -165,17 +165,89 @@ def parse_args() -> argparse.Namespace:
         "--collect-tactile",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Collect Tac3D tactile fields. Use --no-collect-tactile to disable.",
+        help="Collect tactile fields. Use --no-collect-tactile to disable.",
+    )
+    parser.add_argument(
+        "--tactile-source",
+        choices=("tac3d", "paxini"),
+        default="tac3d",
+        help="Tactile sensor backend. Collection reads both Tac3D and Paxini through tactile ZMQ nodes.",
     )
     parser.add_argument("--left-tactile-port", type=int, default=5100)
     parser.add_argument("--right-tactile-port", type=int, default=5101)
     parser.add_argument("--tactile-max-points", type=int, default=400)
     parser.add_argument("--tactile-timeout-ms", type=int, default=15000)
     parser.add_argument(
-        "--collect-force",
+        "--require-valid-tactile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When collecting tactile data, skip frames whose left tactile source reports valid=False.",
+    )
+    parser.add_argument(
+        "--paxini-left-port",
+        default=None,
+        help="Compatibility option; pass this to launch_nodes.py for Paxini ZMQ instead.",
+    )
+    parser.add_argument(
+        "--paxini-right-port",
+        default=None,
+        help="Compatibility option; pass this to launch_nodes.py for Paxini ZMQ instead.",
+    )
+    parser.add_argument(
+        "--paxini-model",
+        choices=tuple(PAXINI_DISTRIBUTED_LENGTHS.keys()),
+        default=PAXINI_DEFAULT_MODEL,
+    )
+    parser.add_argument("--paxini-left-module-id", default="02")
+    parser.add_argument("--paxini-right-module-id", default="03")
+    parser.add_argument("--paxini-left-device-addr", default=None)
+    parser.add_argument("--paxini-right-device-addr", default=None)
+    parser.add_argument("--paxini-baudrate", type=int, default=921600)
+    parser.add_argument("--paxini-timeout-s", type=float, default=0.1)
+    parser.add_argument(
+        "--paxini-read-timeout-s",
+        type=float,
+        default=0.05,
+        help="Compatibility option; pass this to launch_nodes.py for Paxini ZMQ instead.",
+    )
+    parser.add_argument(
+        "--paxini-async",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Read Paxini serial frames in a background thread so tactile I/O "
+            "does not block the robot control loop."
+        ),
+    )
+    parser.add_argument(
+        "--paxini-poll-interval-s",
+        type=float,
+        default=0.0,
+        help="Sleep after each background Paxini poll; 0 polls as fast as the device replies.",
+    )
+    parser.add_argument(
+        "--paxini-warmup-timeout-s",
+        type=float,
+        default=0.5,
+        help="Startup wait for the first async Paxini frame before continuing.",
+    )
+    parser.add_argument(
+        "--paxini-probe-address",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Scan Paxini device addresses 01-08 after opening the serial port.",
+    )
+    parser.add_argument(
+        "--paxini-calibrate-on-start",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Collect force/torque wrench as observation.force_torque.",
+        help="Send Paxini calibration command during warmup.",
+    )
+    parser.add_argument(
+        "--collect-force",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Collect force/torque wrench as observation.force_torque. Use --no-collect-force to disable.",
     )
     parser.add_argument(
         "--force-source",
@@ -372,14 +444,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--gripper-force", type=float, default=4.0)
-    parser.add_argument("--move-step", type=float, default=0.0002)
-    parser.add_argument("--rot-step", type=float, default=0.03)
+    parser.add_argument("--move-step", type=float, default=0.001)
+    parser.add_argument("--rot-step", type=float, default=0.06)
     parser.add_argument("--shift-speed-scale", type=float, default=5)
     parser.add_argument("--screw-pitch", type=float, default=0.0025)
     parser.add_argument(
         "--screw-rot-step",
         type=float,
-        default=0.07,
+        default=0.05,
         help="Screw rotation increment in rad per control frame when --screw-rpm is unset.",
     )
     parser.add_argument(
@@ -392,7 +464,7 @@ def parse_args() -> argparse.Namespace:
         "--reset-max-joint-step-rad",
         type=float,
         default=0.3,
-        help="Max joint step per control frame when moving to L reset.",
+        help="Max joint step per control frame when moving to L reset through IK.",
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -556,7 +628,7 @@ def validate_requested_sensor_features(
 
     if args.collect_tactile and not store_tactile:
         raise RuntimeError(
-            "This dataset was created without Tac3D tactile features, but "
+            "This dataset was created without tactile features, but "
             "--collect-tactile is enabled. Use --overwrite, a new --root, or "
             "run with --no-collect-tactile."
         )
@@ -579,11 +651,11 @@ def format_force_torque(force_torque: np.ndarray) -> np.ndarray:
 
 def print_force_torque(force_torque: np.ndarray) -> None:
     values = [float(v) for v in force_torque]
-    print(
-        "FTS-300-S force_torque "
-        f"[Fx,Fy,Fz,Tx,Ty,Tz]=[{values[0]: .2f}, {values[1]: .2f}, "
-        f"{values[2]: .2f}, {values[3]: .2f}, {values[4]: .2f}, {values[5]: .2f}]"
-    )
+    # print(
+    #     "FTS-300-S force_torque "
+    #     f"[Fx,Fy,Fz,Tx,Ty,Tz]=[{values[0]: .2f}, {values[1]: .2f}, "
+    #     f"{values[2]: .2f}, {values[3]: .2f}, {values[4]: .2f}, {values[5]: .2f}]"
+    # )
 
 
 def parse_xyz_vector(value: str, name: str, *, positive: bool = False) -> np.ndarray:
@@ -888,9 +960,291 @@ def format_tactile_frame(
     if wrench.size < 6:
         wrench = np.pad(wrench, (0, 6 - wrench.size))
     formatted["wrench"] = wrench[:6].astype(np.float32)
-    formatted["timestamp"] = float(frame.get("timestamp", 0.0))
     formatted["valid"] = bool(frame.get("valid", True))
+    formatted["timestamp"] = float(frame.get("timestamp", 0.0)) if formatted["valid"] else 0.0
     return formatted
+
+
+def tactile_wrench_is_safe(frame: dict[str, np.ndarray | float | bool]) -> bool:
+    wrench = np.asarray(frame["wrench"], dtype=np.float32).reshape(-1)
+    if wrench.size < 6:
+        wrench = np.pad(wrench, (0, 6 - wrench.size))
+    return bool(
+        np.all(np.abs(wrench[:3]) < TACTILE_FORCE_SAFETY_LIMIT_N)
+        and np.all(np.abs(wrench[3:6]) < TACTILE_TORQUE_SAFETY_LIMIT_NM)
+    )
+
+
+class PaxiniS2716TactileReader:
+    """Read Paxini/PX-6AX tactile data over USB serial.
+
+    This mirrors /home/zhou/vla/PX-6AX/USB_UI.py without the Tk UI. The Paxini
+    S2716_core returns 3 bytes per taxel for distributed force and 3 bytes for
+    resultant force. Values are converted with the same 0.1 N scale.
+    """
+
+    def __init__(
+        self,
+        port: str | None,
+        *,
+        model: str = PAXINI_DEFAULT_MODEL,
+        module_id: str = "02",
+        device_addr: str | None = None,
+        baudrate: int = 921600,
+        timeout_s: float = 0.1,
+        read_timeout_s: float = 0.5,
+        probe_address: bool = True,
+        calibrate_on_start: bool = False,
+        ready_delay_s: float = PAXINI_PORT_READY_DELAY,
+    ) -> None:
+        try:
+            import serial
+            import serial.tools.list_ports
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Reading Paxini tactile sensors requires pyserial. Install it with: "
+                "pip install pyserial"
+            ) from exc
+
+        self._serial_module = serial
+        self.model = model
+        self.distributed_length = int(PAXINI_DISTRIBUTED_LENGTHS[model])
+        self.resultant_length = 3
+        self.read_timeout_s = float(read_timeout_s)
+        self.device_addr = (device_addr or self._device_addr_from_module(module_id)).upper()
+        self.port = port or self._find_serial_port(serial)
+        if self.port is None:
+            raise RuntimeError(
+                "No USB serial port found for Paxini tactile sensor. Pass "
+                "--paxini-left-port /dev/ttyUSBX explicitly."
+            )
+
+        try:
+            self.ser = serial.Serial(
+                port=self.port,
+                baudrate=baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=timeout_s,
+                write_timeout=timeout_s,
+                inter_byte_timeout=0.0005,
+                xonxoff=False,
+                rtscts=False,
+            )
+        except serial.SerialException as exc:
+            raise RuntimeError(f"Failed to open Paxini serial port {self.port}: {exc}") from exc
+
+        time.sleep(float(ready_delay_s))
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
+        if probe_address:
+            self._probe_device_address()
+        if calibrate_on_start:
+            self.calibrate()
+        print(
+            "Paxini tactile serial ready: "
+            f"port={self.port}, model={self.model}, device_addr={self.device_addr}, "
+            f"distributed_length={self.distributed_length}"
+        )
+
+    @staticmethod
+    def _device_addr_from_module(module_id: str) -> str:
+        return f"{int(module_id, 16) + 1:02X}"
+
+    def _find_serial_port(self, serial_module) -> str | None:
+        for port_info in serial_module.tools.list_ports.comports():
+            port_name = port_info.device
+            description = port_info.description or ""
+            if "USB" in description or "ttyUSB" in port_name or "ttyACM" in port_name:
+                return port_name
+        return None
+
+    def _commands(self) -> dict[str, str]:
+        length_low = self.distributed_length & 0xFF
+        length_high = (self.distributed_length >> 8) & 0xFF
+        return {
+            "calibration": f"55 AA 0A 00 {self.device_addr} 00 79 03 00 00 00 01 00 01",
+            "resultant_force": f"55 AA 09 00 {self.device_addr} 00 FB F0 03 00 00 03 00",
+            "distributed_force": (
+                f"55 AA 09 00 {self.device_addr} 00 FB 0E 04 00 00 "
+                f"{length_low:02X} {length_high:02X}"
+            ),
+        }
+
+    @staticmethod
+    def _calculate_lrc(data: bytes) -> int:
+        lrc = 0
+        for byte in data:
+            lrc = (lrc + byte) & 0xFF
+        return ((~lrc) + 1) & 0xFF
+
+    def _build_frame_with_lrc(self, frame: str) -> bytes:
+        frame_bytes = bytes.fromhex(frame.replace(" ", ""))
+        lrc = self._calculate_lrc(frame_bytes)
+        return frame_bytes + bytes([lrc])
+
+    def _read_response(self, timeout: float | None = None) -> bytes | None:
+        response = b""
+        start_time = time.time()
+        timeout = self.read_timeout_s if timeout is None else float(timeout)
+        while time.time() - start_time < timeout:
+            waiting = self.ser.in_waiting
+            if waiting > 0:
+                response += self.ser.read(waiting)
+                if len(response) >= 4 and response[:2].hex() == "aa55":
+                    response_length = int.from_bytes(response[2:4], byteorder="little")
+                    expected_total = 4 + response_length + 1
+                    if len(response) >= expected_total:
+                        return response[:expected_total]
+                start_time = time.time()
+            time.sleep(0.001)
+        return response if response else None
+
+    def _send_command(self, command_type: str, timeout: float | None = None) -> bytes | None:
+        commands = self._commands()
+        if command_type not in commands:
+            raise ValueError(f"Unknown Paxini command type: {command_type}")
+        try:
+            self.ser.reset_input_buffer()
+            self.ser.write(self._build_frame_with_lrc(commands[command_type]))
+            time.sleep(0.01)
+            return self._read_response(timeout=timeout)
+        except self._serial_module.SerialException as exc:
+            raise RuntimeError(f"Paxini command {command_type} failed on {self.port}: {exc}") from exc
+
+    def _probe_device_address(self) -> None:
+        original_addr = self.device_addr
+        for device_addr in range(1, 9):
+            self.device_addr = f"{device_addr:02X}"
+            response = self._send_command("resultant_force", timeout=0.3)
+            if response and response[:2].hex() == "aa55":
+                return
+        self.device_addr = original_addr
+
+    def calibrate(self) -> None:
+        response = self._send_command("calibration", timeout=0.5)
+        if not response or response[:2].hex() != "aa55":
+            raise RuntimeError(f"Paxini calibration failed on {self.port}")
+
+    @staticmethod
+    def _parse_xyz_triplets(data: bytes) -> np.ndarray:
+        raw = np.frombuffer(data, dtype=np.uint8)
+        triplet_count = raw.size // 3
+        raw = raw[: triplet_count * 3].reshape(triplet_count, 3)
+        parsed = raw.astype(np.int16)
+        signed_xy = parsed[:, :2]
+        signed_xy[signed_xy > 127] -= 256
+        parsed[:, :2] = signed_xy
+        return parsed.astype(np.float32) * 0.1
+
+    def read(self) -> dict[str, np.ndarray | float | bool]:
+        resultant = np.zeros(3, dtype=np.float32)
+        result_response = self._send_command("resultant_force")
+        if result_response and len(result_response) >= 14 + self.resultant_length:
+            result_data = result_response[14 : 14 + self.resultant_length]
+            resultant = self._parse_xyz_triplets(result_data).reshape(-1)[:3].astype(np.float32)
+
+        distributed = np.zeros((0, 3), dtype=np.float32)
+        dist_response = self._send_command("distributed_force")
+        if dist_response and len(dist_response) >= 14:
+            dist_data = dist_response[14 : 14 + self.distributed_length]
+            distributed = self._parse_xyz_triplets(dist_data).astype(np.float32)
+
+        displacement = np.zeros_like(distributed, dtype=np.float32)
+        wrench = np.zeros(6, dtype=np.float32)
+        wrench[:3] = resultant
+        return {
+            "displacement": displacement,
+            "distributed_force": distributed,
+            "wrench": wrench,
+            "timestamp": time.time(),
+            "valid": distributed.size > 0 or bool(np.any(resultant)),
+        }
+
+    def close(self) -> None:
+        if getattr(self, "ser", None) is not None and self.ser.is_open:
+            self.ser.close()
+
+
+class AsyncTactileReader:
+    def __init__(
+        self,
+        tactile_reader,
+        *,
+        max_points: int,
+        poll_interval_s: float = 0.0,
+        name: str = "tactile",
+    ) -> None:
+        self._reader = tactile_reader
+        self._poll_interval_s = max(0.0, float(poll_interval_s))
+        self._name = name
+        self._fallback = empty_tactile_frame(max_points)
+        self._latest = None
+        self._latest_monotonic = 0.0
+        self._latest_wall_time = 0.0
+        self._last_error_text = None
+        self._last_error_print = 0.0
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def _copy_frame(self, frame: dict[str, np.ndarray | float | bool]) -> dict:
+        copied = {}
+        for key, value in frame.items():
+            if isinstance(value, np.ndarray):
+                copied[key] = value.copy()
+            else:
+                copied[key] = value
+        return copied
+
+    def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                frame = self._reader.read()
+            except Exception as exc:
+                now = time.monotonic()
+                text = str(exc)
+                with self._lock:
+                    self._last_error_text = text
+                if now - self._last_error_print > 2.0:
+                    print(f"{self._name} async read failed: {text}")
+                    self._last_error_print = now
+                time.sleep(0.02)
+                continue
+
+            now = time.monotonic()
+            with self._lock:
+                self._latest = self._copy_frame(frame)
+                self._latest_monotonic = now
+                self._latest_wall_time = time.time()
+                self._last_error_text = None
+
+            if self._poll_interval_s > 0.0:
+                self._stop_event.wait(self._poll_interval_s)
+
+    def wait_for_frame(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._latest is not None:
+                    return True
+            time.sleep(0.01)
+        return False
+
+    def read(self) -> dict[str, np.ndarray | float | bool]:
+        with self._lock:
+            if self._latest is None:
+                return self._copy_frame(self._fallback)
+            return self._copy_frame(self._latest)
+
+    def close(self) -> None:
+        self._stop_event.set()
+        close = getattr(self._reader, "close", None)
+        if callable(close):
+            close()
+        self._thread.join(timeout=1.0)
 
 
 def skew(vec: np.ndarray) -> np.ndarray:
@@ -912,10 +1266,28 @@ def rotvec_to_matrix(rotvec: np.ndarray) -> np.ndarray:
 
 
 def matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
+    rotation = np.asarray(rotation, dtype=np.float64)
     cos_theta = (np.trace(rotation) - 1.0) / 2.0
     theta = float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
     if theta < 1e-12:
         return np.zeros(3)
+    if np.pi - theta < 1e-6:
+        diag = np.diag(rotation)
+        axis_index = int(np.argmax(diag))
+        axis = np.zeros(3, dtype=np.float64)
+        axis[axis_index] = np.sqrt(max(0.0, (diag[axis_index] + 1.0) / 2.0))
+        if axis[axis_index] < 1e-8:
+            axis[axis_index] = 1.0
+        for idx in range(3):
+            if idx == axis_index:
+                continue
+            axis[idx] = (
+                rotation[idx, axis_index] + rotation[axis_index, idx]
+            ) / (4.0 * axis[axis_index])
+        norm = float(np.linalg.norm(axis))
+        if norm < 1e-12:
+            return np.zeros(3)
+        return axis / norm * theta
     axis = np.array(
         [
             rotation[2, 1] - rotation[1, 2],
@@ -930,6 +1302,42 @@ def matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
 
 def rotation_matrix(angle: float, direction: tuple[float, float, float]) -> np.ndarray:
     return rotvec_to_matrix(np.asarray(direction, dtype=np.float64) * angle)
+
+
+def _project_unit_to_plane(
+    vector: np.ndarray,
+    normal: np.ndarray,
+) -> np.ndarray | None:
+    projected = vector - np.dot(vector, normal) * normal
+    norm = float(np.linalg.norm(projected))
+    if norm < 1e-9:
+        return None
+    return projected / norm
+
+
+def vertical_reset_rotvec_preserving_heading(
+    current_rotvec: np.ndarray,
+    reset_rotvec: np.ndarray,
+) -> np.ndarray:
+    reset_rot = rotvec_to_matrix(np.asarray(reset_rotvec, dtype=np.float64))
+    current_rot = rotvec_to_matrix(np.asarray(current_rotvec, dtype=np.float64))
+    reset_axis = reset_rot[:, 2].copy()
+    reset_axis /= np.linalg.norm(reset_axis)
+
+    reset_ref = _project_unit_to_plane(reset_rot[:, 0], reset_axis)
+    current_ref = _project_unit_to_plane(current_rot[:, 0], reset_axis)
+    if reset_ref is None or current_ref is None:
+        reset_ref = _project_unit_to_plane(reset_rot[:, 1], reset_axis)
+        current_ref = _project_unit_to_plane(current_rot[:, 1], reset_axis)
+    if reset_ref is None or current_ref is None:
+        return np.asarray(reset_rotvec, dtype=np.float64).copy()
+
+    heading_delta = np.arctan2(
+        np.dot(reset_axis, np.cross(reset_ref, current_ref)),
+        np.dot(reset_ref, current_ref),
+    )
+    target_rot = rotvec_to_matrix(reset_axis * heading_delta) @ reset_rot
+    return matrix_to_rotvec(target_rot)
 
 
 
@@ -972,7 +1380,11 @@ class KeyboardTeleop:
             elif pygame_event.key == self.pygame.K_p:
                 event = "start"
             elif pygame_event.key == self.pygame.K_l:
-                event = "fixed_reset_pose"
+                event = "random_reset_pose"
+            elif pygame_event.key == self.pygame.K_o:
+                event = "capture_reset_orientation"
+            elif pygame_event.key == self.pygame.K_m:
+                event = "reset_tcp_orientation"
             elif pygame_event.key == self.pygame.K_t:
                 self.screw_direction = 0 if self.screw_direction == 1 else 1
                 print("Screw down enabled" if self.screw_direction else "Screw motion stopped")
@@ -1019,10 +1431,15 @@ class KeyboardTeleop:
         if args.screw_rpm is not None:
             screw_rot_step = 2.0 * np.pi * float(args.screw_rpm) / (60.0 * args.fps)
         screw_linear_step = args.screw_pitch * screw_rot_step / (2.0 * np.pi)
-        if self.screw_direction == 1:
+        screw_direction = self.screw_direction
+        if keys[self.pygame.K_y]:
+            screw_direction = 1
+        elif keys[self.pygame.K_h]:
+            screw_direction = -1
+        if screw_direction == 1:
             dpos += np.array([0.0, 0.0, -screw_linear_step])
             drot = rotation_matrix(screw_rot_step, (0.0, 0.0, 1.0))
-        elif self.screw_direction == -1:
+        elif screw_direction == -1:
             dpos += np.array([0.0, 0.0, screw_linear_step])
             drot = rotation_matrix(-screw_rot_step, (0.0, 0.0, 1.0))
 
@@ -1120,16 +1537,24 @@ def main() -> None:
     left_tactile = None
     right_tactile = None
     if args.collect_tactile:
+        tactile_timeout_ms = args.tactile_timeout_ms
+        if args.tactile_source == "paxini" and tactile_timeout_ms == 15000:
+            tactile_timeout_ms = 200
         left_tactile = ZMQClientTactile(
             port=args.left_tactile_port,
             host=args.host,
-            timeout_ms=args.tactile_timeout_ms,
+            timeout_ms=tactile_timeout_ms,
         )
         right_tactile = ZMQClientTactile(
             port=args.right_tactile_port,
             host=args.host,
-            timeout_ms=args.tactile_timeout_ms,
+            timeout_ms=tactile_timeout_ms,
         )
+        if args.tactile_source == "paxini":
+            print(
+                "Using Paxini tactile through ZMQ. Start launch_nodes.py with "
+                "--tactile-source paxini and --paxini-left-port /dev/ttyUSBX."
+            )
 
     try:
         robot_dofs = robot.num_dofs()
@@ -1155,7 +1580,8 @@ def main() -> None:
             "--camera-width 424 --camera-height 240 --camera-fps 15\n"
             "If the servers are already running, check the camera serial numbers "
             "and RealSense USB/frame status. If tactile collection is enabled, "
-            "also check the Tac3D SDK path, sensor IDs, and tactile ZMQ ports. "
+            "also check --tactile-source, Tac3D SDK/ZMQ ports, or start "
+            "launch_nodes.py with Paxini serial ports/device addresses. "
             "If force collection is enabled with --force-source modbus-serial, "
             "check the FTS-300-S USB serial port, slave address, register address, "
             "baudrate, and minimalmodbus/pyserial installation. If --force-source "
@@ -1167,6 +1593,8 @@ def main() -> None:
 
     dataset = make_dataset(args)
     store_tactile, store_force = validate_requested_sensor_features(dataset, args)
+    if store_force:
+        print(f"Force/torque will be saved as {FORCE_TORQUE_KEY}")
     period = 1.0 / args.fps
     force_bias = np.zeros(6, dtype=np.float32)
     if store_force and force_reader is not None:
@@ -1194,15 +1622,23 @@ def main() -> None:
     episode_id = 0
     recording = False
     frames_in_episode = 0
+    force_print_frame = 0
     next_tick = time.time()
     reset_target_joints = None
+    reset_rotation_vector = RESET_TCP_ROTATION_VECTOR.copy()
+    last_tactile_invalid_print = 0.0
+    last_tactile_safety_print = 0.0
+    last_tactile_wrench_print = 0.0
 
     print("Keyboard teleop controls:")
     print("  W/S/A/D/R/F: translate TCP")
     print("  Arrow keys + Q/E: rotate TCP")
     print("  T/G: toggle screw down/up; press the active key again to stop")
+    print("  Y/H: hold screw down/up; release to stop")
     print("  P: start recording")
-    print("  L: move to fixed reset joint pose")
+    print("  L: move to randomized reset pose through IK")
+    print("  O: capture current TCP orientation for L reset")
+    print("  M: set TCP x/y to 0.0378/-0.5468, keep z, set vertical reset orientation")
     print("  SPACE: toggle RG2, Z: clear current episode, ENTER: save episode, ESC: exit")
 
     try:
@@ -1214,17 +1650,98 @@ def main() -> None:
             next_tick = now + period
 
             tcp_pose = robot.get_tcp_pose()
+            # print(
+            #     "TCP position "
+            #     f"[x,y,z]=[{tcp_pose[0]: .4f}, {tcp_pose[1]: .4f}, {tcp_pose[2]: .4f}]"
+            # )
             obs_before = robot.get_observations()
             current_joints = np.asarray(obs_before["joint_positions"], dtype=np.float32)
 
+            tactile_read_error = None
+            if not store_tactile or left_tactile is None:
+                left_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+                right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+            else:
+                try:
+                    left_tactile_frame = format_tactile_frame(
+                        left_tactile.read(),
+                        args.tactile_max_points,
+                    )
+                    if right_tactile is None:
+                        right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+                    else:
+                        right_tactile_frame = format_tactile_frame(
+                            right_tactile.read(),
+                            args.tactile_max_points,
+                        )
+                except RuntimeError as exc:
+                    tactile_read_error = exc
+                    left_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+                    right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
+
+            left_tactile_valid = bool(left_tactile_frame["valid"])
+            right_tactile_valid = bool(right_tactile_frame["valid"])
+            left_wrench = np.asarray(left_tactile_frame["wrench"], dtype=np.float32)
+            right_wrench = np.asarray(right_tactile_frame["wrench"], dtype=np.float32)
+
+            tactile_safety_active = bool(
+                tactile_read_error is not None
+                or left_tactile is None
+                or right_tactile is None
+                or not left_tactile_valid
+                or not right_tactile_valid
+                or not tactile_wrench_is_safe(left_tactile_frame)
+                or not tactile_wrench_is_safe(right_tactile_frame)
+            )
+
+            # Print both tactile wrenches once per second, even when they are safe.
+            # This makes it clear whether the right tactile node is actually updating.
+            now = time.time()
+            if now - last_tactile_wrench_print > 1.0:
+                print(
+                    "Tactile wrench "
+                    f"left_valid={left_tactile_valid} "
+                    f"left={np.array2string(left_wrench, precision=3)}; "
+                    f"right_valid={right_tactile_valid} "
+                    f"right={np.array2string(right_wrench, precision=3)}"
+                )
+                last_tactile_wrench_print = now
+
             dpos, drot, gripper, has_motion, event = teleop.poll(args)
 
-            # if recording:
-                # print(
-                #     "TCP pose "
-                #     f"[x,y,z,rx,ry,rz]=[{tcp_pose[0]: .4f}, {tcp_pose[1]: .4f}, "
-                #     f"{tcp_pose[2]: .4f}, {tcp_pose[3]: .3f}, {tcp_pose[4]: .3f}, {tcp_pose[5]: .3f}]"
-                # )
+            if tactile_safety_active:
+                now = time.time()
+                if now - last_tactile_safety_print > 1.0:
+                    reasons = []
+                    if tactile_read_error is not None:
+                        reasons.append(f"read_error={tactile_read_error}")
+                    if not left_tactile_valid:
+                        reasons.append("left_valid=False")
+                    if not right_tactile_valid:
+                        reasons.append("right_valid=False")
+                    if left_tactile_valid and not tactile_wrench_is_safe(left_tactile_frame):
+                        reasons.append("left_wrench_over_limit")
+                    if right_tactile_valid and not tactile_wrench_is_safe(right_tactile_frame):
+                        reasons.append("right_wrench_over_limit")
+                    print(
+                        "Tactile safety triggered: keyboard input disabled and gripper opened. "
+                        f"reason={','.join(reasons) or 'tactile_source_unavailable'}; "
+                        f"left={np.array2string(left_wrench, precision=3)}, "
+                        f"right={np.array2string(right_wrench, precision=3)}"
+                    )
+                    last_tactile_safety_print = now
+
+                teleop.gripper_closed = False
+                teleop.screw_direction = 0
+                reset_target_joints = None
+                dpos = np.zeros(3, dtype=np.float64)
+                drot = np.eye(3)
+                gripper = 0.0
+                has_motion = False
+                if event != "quit":
+                    event = None
+                if not args.no_command:
+                    robot.command_gripper(5.0, force=args.gripper_force)
 
             if event == "reset":
                 reset_target_joints = None
@@ -1248,7 +1765,6 @@ def main() -> None:
                 continue
             # Start recording immediately when P is pressed, instead of waiting for motion. This allows collecting "zero" episodes with no motion, which can be useful for certain applications.
             if event == "start":
-                reset_target_joints = None
                 if not recording:
                     recording = True
                     frames_in_episode = 0
@@ -1263,14 +1779,54 @@ def main() -> None:
                     print(f"Saved episode {episode_id} before exit ({frames_in_episode} frames)")
                 break
 
-            if event == "fixed_reset_pose":
-                reset_target_joints = None
-                reset_target_joints = FIXED_RESET_JOINTS.copy()
+            if event == "capture_reset_orientation":
+                reset_rotation_vector = np.asarray(tcp_pose[3:6], dtype=np.float64).copy()
+                print(
+                    "Captured reset TCP orientation "
+                    f"[rx,ry,rz]=[{reset_rotation_vector[0]: .6f}, "
+                    f"{reset_rotation_vector[1]: .6f}, {reset_rotation_vector[2]: .6f}]"
+                )
+                continue
+
+            if event == "random_reset_pose":
+                reset_tcp = sample_random_reset_tcp(reset_rotation_vector)
+                try:
+                    reset_target_joints = np.asarray(
+                        robot.inverse_kinematics(reset_tcp, qnear=current_joints[:6]),
+                        dtype=np.float64,
+                    )
+                    reset_target_joints[5] -= 0.5 * np.pi
+                except RuntimeError as exc:
+                    print(
+                        "Reset IK failed. Restart launch_nodes.py so the robot "
+                        f"server exposes inverse_kinematics. Error: {exc}"
+                    )
+                    continue
                 if force_safety is not None:
                     force_safety.reset()
                 print(
-                    "Move to fixed reset joint pose "
+                    "Move to randomized reset pose through IK "
+                    f"tcp=[{reset_tcp[0]: .4f}, {reset_tcp[1]: .4f}, "
+                    f"{reset_tcp[2]: .4f}, {reset_tcp[3]: .3f}, "
+                    f"{reset_tcp[4]: .3f}, {reset_tcp[5]: .3f}] "
                     f"q={np.array2string(reset_target_joints, precision=4)}"
+                )
+
+            reset_orientation_requested = event == "reset_tcp_orientation"
+            reset_orientation_rotvec = None
+            if reset_orientation_requested:
+                reset_target_joints = None
+                if force_safety is not None:
+                    force_safety.reset()
+                reset_orientation_rotvec = vertical_reset_rotvec_preserving_heading(
+                    tcp_pose[3:6],
+                    RESET_TCP_ROTATION_VECTOR,
+                )
+                print(
+                    "Set TCP x/y with current z, vertical RESET orientation, "
+                    f"and current heading [rx,ry,rz]=[{reset_orientation_rotvec[0]: .6f}, "
+                    f"{reset_orientation_rotvec[1]: .6f}, "
+                    f"{reset_orientation_rotvec[2]: .6f}]"
                 )
 
             reset_pose_requested = reset_target_joints is not None
@@ -1285,13 +1841,19 @@ def main() -> None:
                     reset_target_joints = None
                     actual_tcp = robot.get_tcp_pose()
                     print(
-                        "Reached fixed L reset joint target; actual TCP "
+                        "Reached randomized reset IK joint target; actual TCP "
                         f"[x,y,z,rx,ry,rz]=[{actual_tcp[0]: .4f}, {actual_tcp[1]: .4f}, "
                         f"{actual_tcp[2]: .4f}, {actual_tcp[3]: .3f}, "
                         f"{actual_tcp[4]: .3f}, {actual_tcp[5]: .3f}]"
                     )
             else:
-                target_tcp = apply_tcp_delta(tcp_pose, dpos, drot)
+                if reset_orientation_requested:
+                    target_tcp = np.asarray(tcp_pose, dtype=np.float64).copy()
+                    target_tcp[:2] = RESET_ORIENTATION_TCP_XY
+                    target_tcp[3:6] = reset_orientation_rotvec
+                    has_motion = True
+                else:
+                    target_tcp = apply_tcp_delta(tcp_pose, dpos, drot)
 
             force_torque = np.zeros(6, dtype=np.float32)
             if store_force and force_reader is not None:
@@ -1301,6 +1863,10 @@ def main() -> None:
                 except RuntimeError as exc:
                     print(f"Force/torque frame skipped: {exc}")
                     continue
+                print_every = max(1, int(args.force_print_every))
+                if force_print_frame % print_every == 0:
+                    print_force_torque(force_torque)
+                force_print_frame += 1
 
             safety_active = False
             safety_hard_stop = False
@@ -1334,6 +1900,9 @@ def main() -> None:
                     if not safety_hard_stop:
                         robot.command_gripper(gripper, force=args.gripper_force)
 
+            if not recording and not preview.enabled:
+                continue
+
             try:
                 base_image, _ = base_camera.read((args.image_size, args.image_size))
                 wrist_image, _ = wrist_camera.read((args.image_size, args.image_size))
@@ -1343,22 +1912,28 @@ def main() -> None:
             base_image = resize_rgb(base_image, args.image_size)
             wrist_image = resize_rgb(wrist_image, args.image_size)
 
-            if not store_tactile or left_tactile is None or right_tactile is None:
-                left_tactile_frame = empty_tactile_frame(args.tactile_max_points)
-                right_tactile_frame = empty_tactile_frame(args.tactile_max_points)
-            else:
-                try:
-                    left_tactile_frame = format_tactile_frame(
-                        left_tactile.read(),
-                        args.tactile_max_points,
+            if tactile_read_error is not None:
+                print(f"Tactile frame skipped: {tactile_read_error}")
+                continue
+            if args.require_valid_tactile and (
+                not bool(left_tactile_frame["valid"])
+                or not bool(right_tactile_frame["valid"])
+            ):
+                now = time.time()
+                if now - last_tactile_invalid_print > 1.0:
+                    invalid_sides = []
+                    if not bool(left_tactile_frame["valid"]):
+                        invalid_sides.append("left")
+                    if not bool(right_tactile_frame["valid"]):
+                        invalid_sides.append("right")
+                    print(
+                        "Tactile frame skipped: "
+                        f"{'+'.join(invalid_sides)} tactile source returned valid=False. "
+                        "Check launch_nodes.py Paxini serial ports/device addresses and "
+                        "verify both ZMQ tactile frames before recording."
                     )
-                    right_tactile_frame = format_tactile_frame(
-                        right_tactile.read(),
-                        args.tactile_max_points,
-                    )
-                except RuntimeError as exc:
-                    print(f"Tactile frame skipped: {exc}")
-                    continue
+                    last_tactile_invalid_print = now
+                continue
 
             obs_after = robot.get_observations()
             state = np.asarray(obs_after["joint_positions"], dtype=np.float32)
@@ -1418,10 +1993,6 @@ def main() -> None:
                     )
                 if store_force:
                     frame[FORCE_TORQUE_KEY] = force_torque
-                    print_every = max(1, int(args.force_print_every))
-                    # 不打印力
-                    # if frames_in_episode % print_every == 0:
-                    #     print_force_torque(force_torque)
 
                 dataset.add_frame(frame, task=args.task)
                 frames_in_episode += 1
